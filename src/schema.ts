@@ -52,6 +52,13 @@ export const deviceAttestationSchema = {
         },
         index: true,
       },
+      externallyBound: {
+        type: "boolean",
+        required: true,
+        defaultValue: false,
+        input: false,
+        returned: false,
+      },
       bindingVersion: {
         type: "number",
         required: true,

@@ -356,6 +356,7 @@ async function createAssertionFixture(
       .export({ format: "der", type: "spki" })
       .toString("base64"),
     counter: 0,
+    externallyBound: false,
     bindingVersion: 1,
     status: "active",
     extensionsPresent: false,

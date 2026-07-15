@@ -16,6 +16,7 @@ export {
 export { createDeviceAttestation } from "./plugin.js";
 export type {
   AssertionVerificationResult,
+  CredentialIssuanceBinding,
   DeviceAttestationComposition,
   DeviceAttestationEnvironment,
   DeviceAttestationOptions,
@@ -24,4 +25,5 @@ export type {
   RegistrationVerificationResult,
   StoredAttestationCredential,
   VerifiedAttestationGrant,
+  VerifiedCredentialIssuanceGrant,
 } from "./types.js";

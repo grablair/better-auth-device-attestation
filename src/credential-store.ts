@@ -48,6 +48,7 @@ export async function registerCredential(
       publicKey: result.publicKey,
       counter: 0,
       userId: null,
+      externallyBound: false,
       bindingVersion: 0,
       status: "active",
       extensionsPresent: result.extensionsPresent,
@@ -143,6 +144,7 @@ export async function maintainUnboundCredentials(
       { field: "applicationId", value: applicationId },
       { field: "status", value: "active" },
       { field: "userId", value: null },
+      { field: "externallyBound", value: false },
       { field: "unboundExpiresAt", value: now, operator: "lt" },
     ],
     update: {
@@ -160,6 +162,7 @@ export async function maintainUnboundCredentials(
       { field: "applicationId", value: applicationId },
       { field: "status", value: "expired" },
       { field: "userId", value: null },
+      { field: "externallyBound", value: false },
       {
         field: "updatedAt",
         value: new Date(now.getTime() - retentionSeconds * 1000),
@@ -185,6 +188,7 @@ export async function enforceUnboundCredentialQuota(
       { field: "applicationId", value: applicationId },
       { field: "status", value: "active" },
       { field: "userId", value: null },
+      { field: "externallyBound", value: false },
     ],
   });
   if (count >= maximum) {
@@ -209,6 +213,7 @@ export function requireUsableCredential(
   }
   if (
     !credential.userId &&
+    !credential.externallyBound &&
     (!credential.unboundExpiresAt ||
       credential.unboundExpiresAt.getTime() <= Date.now())
   ) {

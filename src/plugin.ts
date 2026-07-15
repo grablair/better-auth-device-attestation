@@ -35,6 +35,8 @@ import {
 } from "./diagnostics.js";
 import {
   consumeAndBindGrant,
+  consumeCredentialIssuanceGrant,
+  consumeOAuthAuthorizationGrant,
   grantIdentifier,
   isProtectedClient,
 } from "./oauth-grant.js";
@@ -45,7 +47,11 @@ import {
   createVerifyBodySchema,
   retireBodySchema,
 } from "./plugin-schemas.js";
-import { createClientData, hashOAuthBinding } from "./protocol/binding.js";
+import {
+  createClientData,
+  hashCredentialIssuanceBinding,
+  hashOAuthBinding,
+} from "./protocol/binding.js";
 import {
   credentialLookupKey,
   hmacSha256,
@@ -62,7 +68,7 @@ import type {
   StoredAttestationCredential,
 } from "./types.js";
 
-const PLUGIN_VERSION = "0.1.0-alpha.0";
+const PLUGIN_VERSION = "0.1.0-alpha.1";
 
 /**
  * Create a stateful Better Auth device-attestation composition.
@@ -165,6 +171,17 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
               });
 
               if (ctx.body.operation === "assert") {
+                if (
+                  ctx.body.purpose === "credential-issuance" &&
+                  !resolved.credentialIssuanceNamespaces.has(
+                    ctx.body.binding.namespace,
+                  )
+                ) {
+                  throw rejection(
+                    "request",
+                    "credential_issuance_namespace_not_allowed",
+                  );
+                }
                 const credential =
                   await ctx.context.adapter.findOne<StoredAttestationCredential>(
                     {
@@ -184,7 +201,9 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
 
               const bindingHash =
                 ctx.body.operation === "assert"
-                  ? hashOAuthBinding(ctx.body.binding)
+                  ? ctx.body.purpose === "oauth-authorization"
+                    ? hashOAuthBinding(ctx.body.binding)
+                    : hashCredentialIssuanceBinding(ctx.body.binding)
                   : undefined;
               const clientData = createClientData({
                 nonce: randomBytes(32),
@@ -199,7 +218,12 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
               const challengeTtl =
                 ctx.body.operation === "register"
                   ? resolved.registrationChallengeTtlSeconds
-                  : resolved.challengeTtlSeconds;
+                  : ctx.body.purpose === "credential-issuance"
+                    ? requireConfiguredPurpose(
+                        resolved.credentialIssuanceChallengeTtlSeconds,
+                        "credential_issuance_not_configured",
+                      )
+                    : resolved.challengeTtlSeconds;
               const expiresAt = new Date(Date.now() + challengeTtl * 1000);
               const state = {
                 version: 1,
@@ -339,13 +363,22 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
               );
               const grantToken = randomToken();
               const expiresAt = new Date(
-                Date.now() + resolved.grantTtlSeconds * 1000,
+                Date.now() +
+                  (state.purpose === "credential-issuance"
+                    ? requireConfiguredPurpose(
+                        resolved.credentialIssuanceGrantTtlSeconds,
+                        "credential_issuance_not_configured",
+                      )
+                    : resolved.grantTtlSeconds) *
+                    1000,
               );
               const grant = {
                 version: 1,
                 provider: provider.id,
                 applicationId: state.applicationId,
                 credentialId: updated.id,
+                credentialBindingVersion: updated.bindingVersion,
+                purpose: state.purpose,
                 bindingHash: requiredBindingHash(state),
                 counterExhausted:
                   updated.status === "revoked" &&
@@ -473,7 +506,29 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
         },
       };
     },
+    async consumeOAuthAuthorizationGrant(input) {
+      if (!oauthPurpose.protectedClientIds.includes(input.binding.clientId)) {
+        throw rejection("request", "oauth_client_not_protected");
+      }
+      return consumeOAuthAuthorizationGrant(requireRuntime(runtime), input);
+    },
+    async consumeCredentialIssuanceGrant(input) {
+      if (!resolved.credentialIssuanceNamespaces.has(input.binding.namespace)) {
+        throw rejection("request", "credential_issuance_namespace_not_allowed");
+      }
+      return consumeCredentialIssuanceGrant(requireRuntime(runtime), input);
+    },
   } satisfies DeviceAttestationComposition;
+}
+
+function requireConfiguredPurpose(
+  value: number | undefined,
+  reason: string,
+): number {
+  if (value === undefined) {
+    throw rejection("request", reason);
+  }
+  return value;
 }
 
 function challengeIdentifier(secret: string, token: string): string {

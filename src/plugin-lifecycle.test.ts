@@ -9,6 +9,7 @@ import { sha256 } from "./protocol/crypto.js";
 import type {
   DeviceAttestationDiagnosticEvent,
   DeviceAttestationProvider,
+  CredentialIssuanceBinding,
   OAuthAuthorizationBinding,
   StoredAttestationCredential,
 } from "./index.js";
@@ -21,6 +22,74 @@ const PUBLIC_KEY = Buffer.alloc(91, 0x61).toString("base64");
 const UINT32_MAX = 0xffff_ffff;
 
 describe("device attestation lifecycle and concurrency", () => {
+  it("binds host credential issuance and later the same key to a user", async () => {
+    const harness = await createHarness();
+    await harness.register();
+    const issuance = await harness.assertCredentialIssuance();
+
+    await expect(
+      harness.composition.consumeCredentialIssuanceGrant({
+        grantToken: issuance.grantToken,
+        binding: harness.credentialIssuanceBinding,
+      }),
+    ).resolves.toMatchObject({
+      provider: "mock-attestation",
+      applicationId: APP_ID,
+    });
+    await expect(harness.credential()).resolves.toMatchObject({
+      externallyBound: true,
+      userId: null,
+      unboundExpiresAt: null,
+      bindingVersion: 1,
+    });
+
+    const oauthAssertion = await harness.assert();
+    const user = await harness.createUser("paired@example.com");
+    await harness.composition.consumeOAuthAuthorizationGrant({
+      grantToken: oauthAssertion.grantToken,
+      binding: harness.binding,
+      userId: user.id,
+    });
+    await expect(harness.credential()).resolves.toMatchObject({
+      externallyBound: true,
+      userId: user.id,
+      bindingVersion: 2,
+    });
+  });
+
+  it("does not allow a grant to cross purpose boundaries", async () => {
+    const harness = await createHarness();
+    await harness.register();
+    const oauthAssertion = await harness.assert();
+
+    await expect(
+      harness.composition.consumeCredentialIssuanceGrant({
+        grantToken: oauthAssertion.grantToken,
+        binding: harness.credentialIssuanceBinding,
+      }),
+    ).rejects.toMatchObject({ reason: "grant_purpose_mismatch" });
+    const user = await harness.createUser("consumed@example.com");
+    await expect(
+      harness.composition.consumeOAuthAuthorizationGrant({
+        grantToken: oauthAssertion.grantToken,
+        binding: harness.binding,
+        userId: user.id,
+      }),
+    ).rejects.toMatchObject({ reason: "grant_unavailable" });
+  });
+
+  it("rejects an unconfigured credential issuance namespace", async () => {
+    const harness = await createHarness();
+    await harness.register();
+
+    await expect(
+      harness.credentialIssuanceChallenge({
+        ...harness.credentialIssuanceBinding,
+        namespace: "untrusted-namespace",
+      }),
+    ).rejects.toMatchObject({ status: "FORBIDDEN" });
+  });
+
   it("allows exactly one concurrent consumer of a registration challenge", async () => {
     const harness = await createHarness();
     const challenge = await harness.registrationChallenge(KEY_ID);
@@ -427,6 +496,7 @@ async function createHarness(options: HarnessOptions = {}) {
   });
   const context = await auth.$context;
   const binding = oauthBinding();
+  const credentialIssuanceBinding = hostCredentialIssuanceBinding();
   const protectedOAuth = composition.protectOAuthProvider({
     loginPage: "/login",
     consentPage: "/consent",
@@ -485,6 +555,27 @@ async function createHarness(options: HarnessOptions = {}) {
     const result = await verifyAssertion(challenge.challengeToken);
     if (result.credentialState !== "asserted") {
       throw new TypeError("Expected an assertion grant.");
+    }
+    return result;
+  };
+  const credentialIssuanceChallenge = (
+    issuanceBinding = credentialIssuanceBinding,
+  ) =>
+    auth.api.createDeviceAttestationChallenge({
+      body: {
+        provider: provider.id,
+        applicationId: APP_ID,
+        operation: "assert",
+        keyId: KEY_ID.toString("base64"),
+        purpose: "credential-issuance",
+        binding: issuanceBinding,
+      },
+    });
+  const assertCredentialIssuance = async () => {
+    const challenge = await credentialIssuanceChallenge();
+    const result = await verifyAssertion(challenge.challengeToken);
+    if (result.credentialState !== "asserted") {
+      throw new TypeError("Expected a credential issuance grant.");
     }
     return result;
   };
@@ -548,9 +639,12 @@ async function createHarness(options: HarnessOptions = {}) {
 
   return {
     assert,
+    assertCredentialIssuance,
     assertionChallenge,
     auth,
     binding,
+    credentialIssuanceBinding,
+    credentialIssuanceChallenge,
     composition,
     consumeGrant,
     context,
@@ -583,6 +677,12 @@ function createComposition(input: {
       },
       oauthAuthorization: {
         protectedClientIds: input.protectedClientIds ?? ["mobile-app"],
+        challengeTtlSeconds: 120,
+        grantTtlSeconds: 300,
+        requireDpopJkt: true,
+      },
+      credentialIssuance: {
+        allowedNamespaces: ["example.device-pairing"],
         challengeTtlSeconds: 120,
         grantTtlSeconds: 300,
         requireDpopJkt: true,
@@ -638,6 +738,16 @@ function oauthBinding(): OAuthAuthorizationBinding {
     scope: "openid offline_access",
     resources: ["https://api.example.com"],
     nonce: "oidc-nonce",
+  };
+}
+
+function hostCredentialIssuanceBinding(): CredentialIssuanceBinding {
+  return {
+    namespace: "example.device-pairing",
+    subject: sha256(Buffer.from("pairing-transaction")).toString("base64url"),
+    dpopJkt: sha256(Buffer.from("paired-device-dpop-key")).toString(
+      "base64url",
+    ),
   };
 }
 

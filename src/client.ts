@@ -30,10 +30,25 @@ export interface DeviceAttestationAssertionChallengeRequest {
   };
 }
 
+/** Request body for an attested host credential-issuance challenge. */
+export interface DeviceAttestationCredentialIssuanceChallengeRequest {
+  provider: string;
+  applicationId: string;
+  operation: "assert";
+  keyId: string;
+  purpose: "credential-issuance";
+  binding: {
+    namespace: string;
+    subject: string;
+    dpopJkt: string;
+  };
+}
+
 /** Valid request body for the shared challenge endpoint. */
 export type DeviceAttestationChallengeRequest =
   | DeviceAttestationRegistrationChallengeRequest
-  | DeviceAttestationAssertionChallengeRequest;
+  | DeviceAttestationAssertionChallengeRequest
+  | DeviceAttestationCredentialIssuanceChallengeRequest;
 
 /**
  * Create the Better Auth client plugin used to infer device-attestation
@@ -46,7 +61,7 @@ export type DeviceAttestationChallengeRequest =
 export function deviceAttestationClient() {
   return {
     id: "device-attestation",
-    version: "0.1.0-alpha.0",
+    version: "0.1.0-alpha.1",
     $InferServerPlugin: {} as ReturnType<
       typeof createDeviceAttestation
     >["serverPlugin"],

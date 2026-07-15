@@ -47,6 +47,18 @@ describe("device attestation client plugin", () => {
           scope: "openid",
         },
       });
+      void client.deviceAttestation.challenge({
+        provider: "app-attest",
+        applicationId: "TEAMID.com.example.mobile",
+        operation: "assert",
+        keyId: "base64-key-id",
+        purpose: "credential-issuance",
+        binding: {
+          namespace: "example.device-pairing",
+          subject: "pairing-transaction-digest",
+          dpopJkt: "thumbprint",
+        },
+      });
     };
     expectTypeOf(typecheckChallengeBodies).toBeFunction();
   });

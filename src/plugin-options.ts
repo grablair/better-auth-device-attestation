@@ -8,6 +8,9 @@ export interface ResolvedDeviceAttestationOptions {
   challengeTtlSeconds: number;
   registrationChallengeTtlSeconds: number;
   grantTtlSeconds: number;
+  credentialIssuanceChallengeTtlSeconds: number | undefined;
+  credentialIssuanceGrantTtlSeconds: number | undefined;
+  credentialIssuanceNamespaces: ReadonlySet<string>;
   unboundCredentialTtlSeconds: number;
   expiredCredentialRetentionSeconds: number;
   maxActiveUnboundCredentialsPerApplication: number | undefined;
@@ -33,6 +36,7 @@ export function resolveDeviceAttestationOptions(
 
   const oauthPurpose = options.purposes.oauthAuthorization;
   const registrationPurpose = options.purposes.credentialRegistration;
+  const credentialIssuancePurpose = options.purposes.credentialIssuance;
   if (
     oauthPurpose.requireDpopJkt !== true ||
     oauthPurpose.protectedClientIds.length === 0 ||
@@ -41,6 +45,25 @@ export function resolveDeviceAttestationOptions(
     throw new TypeError(
       "OAuth authorization requires DPoP and at least one non-empty protected client ID.",
     );
+  }
+  if (
+    credentialIssuancePurpose &&
+    (credentialIssuancePurpose.requireDpopJkt !== true ||
+      credentialIssuancePurpose.allowedNamespaces.length === 0 ||
+      credentialIssuancePurpose.allowedNamespaces.some(
+        (namespace) => namespace.length === 0,
+      ))
+  ) {
+    throw new TypeError(
+      "Credential issuance requires DPoP and at least one non-empty namespace.",
+    );
+  }
+  if (
+    credentialIssuancePurpose &&
+    new Set(credentialIssuancePurpose.allowedNamespaces).size !==
+      credentialIssuancePurpose.allowedNamespaces.length
+  ) {
+    throw new TypeError("allowedNamespaces must not contain duplicates.");
   }
   if (
     new Set(oauthPurpose.protectedClientIds).size !==
@@ -65,6 +88,23 @@ export function resolveDeviceAttestationOptions(
       oauthPurpose.grantTtlSeconds,
       300,
       "purposes.oauthAuthorization.grantTtlSeconds",
+    ),
+    credentialIssuanceChallengeTtlSeconds: credentialIssuancePurpose
+      ? positiveSeconds(
+          credentialIssuancePurpose.challengeTtlSeconds,
+          120,
+          "purposes.credentialIssuance.challengeTtlSeconds",
+        )
+      : undefined,
+    credentialIssuanceGrantTtlSeconds: credentialIssuancePurpose
+      ? positiveSeconds(
+          credentialIssuancePurpose.grantTtlSeconds,
+          300,
+          "purposes.credentialIssuance.grantTtlSeconds",
+        )
+      : undefined,
+    credentialIssuanceNamespaces: new Set(
+      credentialIssuancePurpose?.allowedNamespaces ?? [],
     ),
     unboundCredentialTtlSeconds: positiveSeconds(
       registrationPurpose.unboundCredentialTtlSeconds,

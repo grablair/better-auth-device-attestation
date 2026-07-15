@@ -1,9 +1,14 @@
 import { rejection } from "../errors.js";
-import type { OAuthAuthorizationBinding } from "../types.js";
+import type {
+  CredentialIssuanceBinding,
+  OAuthAuthorizationBinding,
+} from "../types.js";
 import { sha256 } from "./crypto.js";
 
 const CLIENT_DATA_DOMAIN = "better-auth-device-attestation/client-data/v1";
 const BINDING_DOMAIN = "better-auth-device-attestation/oauth-binding/v1";
+const CREDENTIAL_ISSUANCE_BINDING_DOMAIN =
+  "better-auth-device-attestation/credential-issuance-binding/v1";
 
 export function normalizeOAuthBinding(
   input: OAuthAuthorizationBinding,
@@ -56,11 +61,43 @@ export function hashOAuthBinding(input: OAuthAuthorizationBinding): Buffer {
   );
 }
 
+export function normalizeCredentialIssuanceBinding(
+  input: CredentialIssuanceBinding,
+): CredentialIssuanceBinding {
+  if (
+    input.namespace.length === 0 ||
+    input.subject.length === 0 ||
+    input.dpopJkt.length === 0
+  ) {
+    throw rejection("request", "incomplete_credential_issuance_binding");
+  }
+  return {
+    namespace: input.namespace,
+    subject: input.subject,
+    dpopJkt: input.dpopJkt,
+  };
+}
+
+export function hashCredentialIssuanceBinding(
+  input: CredentialIssuanceBinding,
+): Buffer {
+  const normalized = normalizeCredentialIssuanceBinding(input);
+  return sha256(
+    encodeLengthPrefixed([
+      CREDENTIAL_ISSUANCE_BINDING_DOMAIN,
+      normalized.namespace,
+      normalized.subject,
+      normalized.dpopJkt,
+    ]),
+  );
+}
+
 export function createClientData(input: {
   nonce: Uint8Array;
   provider: string;
   operation: "register" | "assert";
-  purpose: "credential-registration" | "oauth-authorization";
+  purpose:
+    "credential-registration" | "credential-issuance" | "oauth-authorization";
   applicationId: string;
   keyLookupHash: string;
   bindingHash?: Uint8Array;
