@@ -1,10 +1,10 @@
 # Device Attestation for Better Auth
 
-- Status: proposed implementation design
+- Status: implemented alpha design; stable-release requirements remain open
 - Target package: `@grablair/better-auth-device-attestation`
 - Initial provider: Apple App Attest
 - Target Better Auth line: 1.7
-- Last reviewed: 2026-07-14
+- Last reviewed: 2026-07-15
 
 ## 1. Overview
 
@@ -15,8 +15,8 @@ challenge issuance, evidence verification, persistent attestation credentials,
 assertion counters, user binding, short-lived grants, policy evaluation, and
 safe diagnostics.
 
-The initial release will support Apple App Attest on Node.js 20 or newer. The
-provider contract will allow a later Android Play Integrity provider without
+The current alpha supports Apple App Attest on Node.js 20 or newer. Its provider
+boundary leaves room for a later Android Play Integrity provider without
 pretending that Play Integrity has App Attest's persistent-key and assertion
 counter model.
 
@@ -226,7 +226,8 @@ The implementation will follow Better Auth's public plugin conventions:
   endpoints;
 - define the credential table through the plugin `schema` property so Better
   Auth's CLI can generate Drizzle, Prisma, or SQL schema changes;
-- support schema field/model-name overrides through a typed `schema` option;
+- add schema field/model-name overrides through a typed `schema` option before
+  the stable release;
 - use `ctx.context.adapter` and documented `internalAdapter` helpers rather than
   importing an application ORM;
 - use Better Auth's atomic `consumeOne`/verification consumption and
@@ -247,7 +248,7 @@ The package will not patch Better Auth options after initialization or locate
 other plugins by undocumented object shape. Optional OAuth composition will be
 created explicitly by the host configuration.
 
-## 10. Proposed public API
+## 10. Alpha public API
 
 The API separates the provider, the Better Auth plugin, and optional OAuth
 composition:
@@ -267,6 +268,7 @@ const attestation = createDeviceAttestation({
       applications: [
         {
           appId: "TEAMID.com.example.mobile",
+          platform: "ios",
           environment: "production",
           extensions: {
             presence: "if-present",
@@ -311,6 +313,10 @@ export const auth = betterAuth({
 });
 ```
 
+`platform` is server-owned application policy. Native macOS applications use
+`"macos"`, which makes the certificate verifier require Apple's signed ACL Blob
+for SIP and Full Security before registration succeeds.
+
 `createDeviceAttestation()` returns one stateful composition object for one
 `betterAuth()` instance:
 
@@ -319,8 +325,6 @@ interface DeviceAttestationComposition {
   serverPlugin: BetterAuthPlugin;
 
   protectOAuthProvider<T extends OAuthProviderOptions>(options: T): T;
-
-  verifyGrant(input: VerifyGrantInput): Promise<VerifiedAttestationGrant>;
 }
 ```
 
@@ -344,45 +348,33 @@ native helper package can compose the typed HTTP client with Swift, Kotlin, or
 React Native bridges without making native code a dependency of every server
 consumer.
 
-## 11. Provider contract
+## 11. Alpha provider contract
 
-The shared contract models capabilities rather than forcing every platform into
-an App Attest-shaped lifecycle:
+The alpha contract models the persistent credential lifecycle App Attest needs:
 
 ```ts
-interface DeviceAttestationProvider<Signals, StoredCredential> {
+interface DeviceAttestationProvider {
   readonly id: string;
-  readonly capabilities: {
-    persistentCredential: boolean;
-    registrationEvidence: boolean;
-    interactionEvidence: boolean;
-    monotonicCounter: boolean;
-  };
-
-  verifyEvidence(input: ProviderEvidenceInput): Promise<
-    | {
-        mode: "credential-registration";
-        assurance: AttestationAssurance<Signals>;
-        credential: StoredCredential;
-      }
-    | {
-        mode: "credential-assertion";
-        assurance: AttestationAssurance<Signals>;
-        nextCounter: number;
-      }
-    | {
-        mode: "interaction-verdict";
-        assurance: AttestationAssurance<Signals>;
-        replayKey?: string;
-      }
-  >;
+  readonly maxEvidenceBytes: number;
+  decodeKeyId(value: string): Uint8Array;
+  verifyRegistration(input: RegistrationInput): Promise<RegistrationResult>;
+  verifyAssertion(input: AssertionInput): Promise<AssertionResult>;
 }
 ```
 
-The normalized assurance contains only shared facts:
+Registration results contain the verified application, environment, SPKI public
+key, zero counter, normalized distribution metadata, and an optional opaque
+untrusted receipt. Assertion results contain only the advanced counter and
+normalized distribution metadata.
+
+This interface intentionally reflects the first implemented provider. Android
+Play Integrity does not have the same persistent credential and counter model;
+before Android support, the boundary will evolve through a reviewed capability
+contract without weakening the App Attest invariants. A future normalized
+assurance type may contain only shared facts:
 
 ```ts
-interface AttestationAssurance<Signals> {
+interface FutureAttestationAssurance<Signals> {
   provider: string;
   applicationId: string;
   environment: "development" | "production";
@@ -415,6 +407,7 @@ Registration request:
 ```json
 {
   "provider": "app-attest",
+  "applicationId": "TEAMID.com.example.mobile",
   "operation": "register",
   "keyId": "base64-apple-key-identifier",
   "purpose": "credential-registration"
@@ -430,6 +423,7 @@ OAuth request:
 ```json
 {
   "provider": "app-attest",
+  "applicationId": "TEAMID.com.example.mobile",
   "operation": "assert",
   "keyId": "base64-apple-key-identifier",
   "purpose": "oauth-authorization",
@@ -579,14 +573,14 @@ The plugin contributes one model through its schema:
 | `id`                 | Better Auth ID   | Primary identifier generated by the configured adapter.                                                          |
 | `lookupKey`          | string           | Unique SHA-256 over provider, application ID, and provider key identifier. The raw key identifier is not stored. |
 | `provider`           | string           | Indexed provider ID.                                                                                             |
-| `applicationId`      | string           | Indexed App ID or provider application identity.                                                                 |
+| `applicationId`      | string           | Indexed App ID or provider application identity, limited to 255 characters for adapter portability.              |
 | `environment`        | string           | `development` or `production`.                                                                                   |
-| `publicKey`          | string, optional | Base64url SPKI while usable; input/returned disabled in schema metadata.                                         |
+| `publicKey`          | string, optional | Base64 SPKI while usable; input/returned disabled in schema metadata.                                            |
 | `counter`            | number           | Unsigned 32-bit counter stored with Better Auth `bigint: true`; valid range `0..4294967295`.                     |
 | `userId`             | string, optional | Better Auth user reference using `onDelete: "set null"`; a deletion hook first creates a revoked tombstone.      |
 | `bindingVersion`     | number           | Starts at zero and supports atomic first-user claiming.                                                          |
 | `status`             | string           | `active`, `expired`, or `revoked`; no transition returns an expired or revoked row to active.                    |
-| `validationCategory` | number, optional | Last verified App Attest category.                                                                               |
+| `validationCategory` | number, optional | Last verified App Attest UInt32 category, stored with Better Auth `bigint: true`.                                |
 | `bundleVersion`      | string, optional | Last verified App Attest bundle version.                                                                         |
 | `extensionsPresent`  | boolean          | Whether the last accepted evidence contained the Apple extensions.                                               |
 | `createdAt`          | date             | Registration time.                                                                                               |
@@ -597,7 +591,8 @@ The plugin contributes one model through its schema:
 | `revocationReason`   | string, optional | Closed, non-sensitive reason enum; never a raw exception or user-supplied value.                                 |
 | `lastUsedAt`         | date, optional   | Last accepted assertion or grant redemption.                                                                     |
 
-The plugin accepts Better Auth-style model and field-name overrides. It does not
+The alpha does not yet accept model and field-name overrides. Supporting Better
+Auth-style overrides remains a stable-release requirement. The package does not
 expose a Drizzle or Prisma schema as its canonical API; generated examples are
 documentation, while the plugin schema remains authoritative.
 
@@ -639,11 +634,14 @@ request is rejected and must obtain a fresh challenge and assertion. We will not
 accept an out-of-order lower assertion merely because it has a different counter
 value.
 
-The schema uses Better Auth's `bigint: true` database attribute while the API
-keeps the value as a JavaScript number, which safely represents every UInt32.
-Adapter contract tests must cover `2147483648`, `4294967294`, and `4294967295`.
-After accepting `4294967295`, the credential is retired and the client must
-register a new key; zero or any lower value is never accepted as wraparound.
+The schema uses Better Auth's `bigint: true` database attribute while the
+provider API keeps the value as a JavaScript number, which safely represents
+every UInt32. Adapters such as PostgreSQL may materialize `bigint` as a decimal
+string; the plugin strictly normalizes only canonical unsigned decimal strings
+at the adapter boundary before provider verification. Adapter contract tests
+must cover `2147483648`, `4294967294`, and `4294967295`. After accepting
+`4294967295`, the credential is retired and the client must register a new key;
+zero or any lower value is never accepted as wraparound.
 
 ### First user binding
 
@@ -913,8 +911,8 @@ For an assertion, the implementation must:
 5. verify the RP ID hash for the stored application;
 6. decode the counter as unsigned big-endian UInt32 and require it to be greater
    than the stored counter;
-7. parse an extension map only when `ED` is set and reject trailing bytes when
-   it is clear;
+7. parse at most one extension map using the App Attest profile described below
+   and reject any bytes that do not form that one complete map;
 8. validate distribution signals through the same application policy used at
    registration;
 9. atomically advance the stored counter and last-use metadata;
@@ -925,16 +923,25 @@ Apple's official sample and a sanitized real-device fixture.
 
 ## 19. Authenticator extensions and iOS 27
 
-The authenticator parser follows WebAuthn flags, not assumptions about OS
-versions:
+The authenticator parser follows the App Attest data contract rather than
+assuming that every Apple field follows generic WebAuthn extension signaling:
 
 - `AT` (`0x40`) means attested credential data follows the fixed 37-byte prefix;
 - `ED` (`0x80`) means one CBOR extension map follows the attested credential
   data, or follows the fixed prefix for assertions;
-- `ED` clear means there are no extension bytes;
+- Apple's official App Attest validation fixture appends its distribution
+  extension map with `ED` clear, so the App Attest provider permits exactly one
+  trailing CBOR extension map after the structurally decoded credential key or
+  assertion prefix even when `ED` is clear;
 - the COSE credential key is decoded as one CBOR item to discover its actual
   length;
-- any bytes inconsistent with these flags are rejected.
+- any trailing bytes that do not decode to exactly one complete extension map
+  are rejected.
+
+The generic authenticator-data parser keeps this behavior behind an explicit App
+Attest profile option. Other WebAuthn consumers do not silently gain the
+unflagged-extension rule. Extension presence is determined from the decoded
+bytes, not inferred solely from `ED` and not from a client-supplied OS version.
 
 When present, extension containers may be represented by the installed CBOR
 decoder as either a plain JavaScript object or a `Map`. The parser:
@@ -961,9 +968,10 @@ policy:
 type AppAttestExtensionPresence = "if-present" | "required";
 ```
 
-`if-present` means evidence with `ED` clear can pass the pre-iOS-27
-compatibility path, while encoded extensions are strictly enforced. `required`
-means missing extensions fail. There is no `ignore` mode.
+`if-present` means evidence with no encoded extension map can pass the
+compatibility path, while any encoded extensions are strictly enforced.
+`required` means a decoded extension map must be present. There is no `ignore`
+mode.
 
 The host must also configure allowed categories and bundle-version policy for
 every production application. A reasonable TestFlight/App Store policy is
@@ -1026,7 +1034,7 @@ The host may configure a structured diagnostic sink:
 ```ts
 interface DeviceAttestationDiagnosticEvent {
   provider: string;
-  operation: "challenge" | "register" | "assert" | "grant";
+  operation: "challenge" | "verify" | "register" | "assert" | "grant";
   stage:
     | "request"
     | "challenge"
@@ -1036,6 +1044,7 @@ interface DeviceAttestationDiagnosticEvent {
     | "nonce"
     | "app-identity"
     | "environment"
+    | "platform-policy"
     | "distribution-metadata"
     | "signature"
     | "counter"
@@ -1046,6 +1055,7 @@ interface DeviceAttestationDiagnosticEvent {
   reason: string;
   retryable: boolean;
   measurements?: {
+    encodedEvidenceCharacters?: number;
     evidenceBytes?: number;
     authenticatorDataBytes?: number;
     flags?: number;
@@ -1068,6 +1078,11 @@ The plugin never includes these values in a diagnostic event:
 - DPoP proofs, JWKs, or thumbprints;
 - email addresses, passwords, cookies, credentials, or request bodies;
 - arbitrary thrown error messages or stacks from expected rejection.
+
+Reporting is a best-effort side effect. The plugin contains synchronous throws
+and asynchronous rejections but does not await reporter completion on the
+authentication path. Hosts own telemetry deadlines, bounded queues, and
+backpressure.
 
 Unexpected failures can be correlated through host telemetry request IDs, but
 the plugin will not generate a device correlation identifier. The default
@@ -1178,6 +1193,16 @@ add Android fields to the App Attest credential model or flatten all provider
 signals into one trust score.
 
 ## 26. Testing strategy
+
+The current alpha automates the official Apple production vector, synthetic
+production and development registration vectors, distribution-extension
+regressions, mutated verifier inputs, deterministic malformed-CBOR sampling,
+memory-adapter lifecycle and concurrency checks, a shared Better Auth
+`getTestInstance()` contract against SQLite/Kysely and PostgreSQL/Kysely,
+inferred-client type checks, enforced coverage thresholds, and packed
+ESM/declaration validation. Sanitized real-device vectors, the remaining adapter
+matrix, and end-to-end OAuth token issuance remain stable-release criteria
+rather than completed alpha coverage.
 
 ### Parser and verifier tests
 

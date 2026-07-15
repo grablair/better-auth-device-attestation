@@ -4,7 +4,9 @@
   "description": "Device attestation for Better Auth, starting with Apple App Attest.",
   "private": true,
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/app-attest/x509.js"
+  ],
   "license": "MIT",
   "author": "Graham Arthur Blair",
   "repository": {
@@ -27,12 +29,13 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@11.7.0",
+  "packageManager": "pnpm@10.34.5",
   "files": [
     "dist",
     "LICENSE",
     "README.md",
-    "SECURITY.md"
+    "SECURITY.md",
+    "docs"
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -40,6 +43,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
     }
   },
   "publishConfig": {
@@ -47,11 +54,15 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:coverage && pnpm package:check",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0",
+    "package:check": "pnpm build && publint && attw --pack . --profile esm-only && pnpm package:smoke",
+    "package:smoke": "node scripts/package-smoke.mjs",
     "test": "vitest run --passWithNoTests",
+    "test:coverage": "vitest run --coverage --passWithNoTests",
+    "test:postgres": "vitest run --config vitest.config.postgres.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "peerDependencies": {
@@ -64,14 +75,27 @@
     }
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@better-auth/oauth-provider": "1.7.0-rc.1",
     "@eslint/js": "^9.39.2",
     "@types/node": "^24.10.1",
+    "@types/pg": "^8.20.0",
+    "@vitest/coverage-v8": "4.1.10",
     "better-auth": "1.7.0-rc.1",
     "eslint": "^9.39.2",
+    "kysely": "0.28.17",
+    "pg": "^8.22.0",
     "prettier": "^3.8.1",
+    "publint": "^0.3.21",
     "typescript": "5.9.3",
     "typescript-eslint": "^8.56.1",
     "vitest": "^4.1.4"
+  },
+  "dependencies": {
+    "@better-auth/core": "1.7.0-rc.1",
+    "@peculiar/x509": "2.0.0",
+    "cbor": "10.0.12",
+    "reflect-metadata": "0.2.2",
+    "zod": "4.4.3"
   }
 }
