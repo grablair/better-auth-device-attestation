@@ -108,6 +108,18 @@ const grantStateSchema = z.object({
 
 type RuntimeContext = Parameters<NonNullable<BetterAuthPlugin["init"]>>[0];
 
+/**
+ * Create a stateful Better Auth device-attestation composition.
+ *
+ * Install `serverPlugin` in exactly one `betterAuth()` instance. When the
+ * Better Auth OAuth Provider is used, pass its options through
+ * `protectOAuthProvider()` before installing it. The composition owns one-time
+ * challenge and grant state, credential persistence, counter updates, user
+ * binding, lifecycle hooks, rate limits, and safe error translation.
+ *
+ * @throws {TypeError} When providers or lifecycle policy are invalid, or when
+ * the same composition initializes more than once.
+ */
 export function createDeviceAttestation(options: DeviceAttestationOptions) {
   const providers = new Map<string, DeviceAttestationProvider>();
   for (const provider of options.providers) {
@@ -410,15 +422,17 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
                   where: [{ field: "lookupKey", value: lookupKey }],
                 });
               requireUsableCredential(credential);
+              const normalizedCredential =
+                normalizeCredentialCounter(credential);
               const result = await provider.verifyAssertion({
-                credential,
+                credential: normalizedCredential,
                 keyId,
                 clientDataHash,
                 evidence,
               });
               const updated = await advanceCounter(
                 ctx.context,
-                credential,
+                normalizedCredential,
                 result,
               );
               const grantToken = randomToken();
@@ -453,6 +467,13 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
         {
           method: "GET",
           use: [sensitiveSessionMiddleware],
+          metadata: {
+            openapi: {
+              operationId: "listDeviceAttestationCredentials",
+              description:
+                "List the authenticated user's device-attestation credentials.",
+            },
+          },
         },
         async (ctx) => {
           const userId = ctx.context.session.user.id;
@@ -477,6 +498,13 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
           method: "POST",
           body: retireBodySchema,
           use: [sensitiveSessionMiddleware],
+          metadata: {
+            openapi: {
+              operationId: "retireDeviceAttestationCredential",
+              description:
+                "Permanently retire one device-attestation credential owned by the authenticated user.",
+            },
+          },
         },
         async (ctx) => {
           const retired =
@@ -882,6 +910,22 @@ function requireUsableCredential(
       reason: "unbound_credential_expired",
     });
   }
+}
+
+function normalizeCredentialCounter(
+  credential: StoredAttestationCredential,
+): StoredAttestationCredential {
+  const value: unknown = credential.counter;
+  const counter =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^(0|[1-9][0-9]*)$/u.test(value)
+        ? Number(value)
+        : Number.NaN;
+  if (!Number.isSafeInteger(counter) || counter < 0 || counter > UINT32_MAX) {
+    throw rejection("storage", "invalid_stored_counter");
+  }
+  return counter === value ? credential : { ...credential, counter };
 }
 
 function challengeIdentifier(secret: string, token: string): string {

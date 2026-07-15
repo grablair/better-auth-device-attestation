@@ -29,26 +29,55 @@ const MAX_RECEIPT_BYTES = 96 * 1024;
 
 declare const untrustedReceiptBrand: unique symbol;
 
+/**
+ * Opaque receipt extracted from a cryptographically valid App Attest object.
+ *
+ * The brand prevents callers from accidentally treating these bytes as a
+ * verified fraud-risk result. Receipt bytes remain untrusted until processed
+ * independently with Apple's server-to-server receipt service.
+ */
 export type UntrustedAppAttestReceipt = Uint8Array & {
   readonly [untrustedReceiptBrand]: true;
 };
 
+/** Policy for evidence that does not contain Apple distribution extensions. */
 export type AppAttestExtensionPresence = "if-present" | "required";
 
+/** App Attest identity and distribution policy for one Apple App ID. */
 export interface AppAttestApplication {
+  /** Apple App ID in `TeamID.bundleIdentifier` form. */
   appId: string;
+  /** App Attest AAGUID environment accepted for this application. */
   environment: DeviceAttestationEnvironment;
+  /** Policy applied after extension structure has been strictly parsed. */
   extensions: {
+    /** Whether otherwise-valid evidence may omit the Apple extensions. */
     presence: AppAttestExtensionPresence;
+    /**
+     * Allowed unsigned validation categories. Typical production distribution
+     * values are 2 for TestFlight and 4 for the App Store.
+     */
     allowedValidationCategories: readonly number[];
+    /**
+     * Decide whether Apple's `apple_bundle_version_01` value is allowed.
+     * Apple reports `CFBundleVersion`, not the marketing version.
+     */
     validateBundleVersion: (version: string) => boolean | Promise<boolean>;
   };
 }
 
+/** Configuration for the Apple App Attest provider. */
 export interface AppAttestOptions {
+  /** Non-empty list of applications with unique App IDs. */
   applications: readonly AppAttestApplication[];
+  /** Maximum decoded attestation or assertion size. Defaults to 128 KiB. */
   maxEvidenceBytes?: number;
+  /** Optional non-blocking delivery of opaque receipts for fraud assessment. */
   receipt?: {
+    /**
+     * Enqueue or otherwise hand off receipt bytes without logging them. Callback
+     * failures do not turn valid attestation evidence into a rejection.
+     */
     onReceipt: (
       receipt: UntrustedAppAttestReceipt,
       context: {
@@ -56,6 +85,7 @@ export interface AppAttestOptions {
         environment: DeviceAttestationEnvironment;
       },
     ) => void | Promise<void>;
+    /** Receipt callback errors are report-only in the synchronous auth flow. */
     failureMode: "report";
   };
 }
@@ -71,6 +101,17 @@ interface AssertionEnvelope {
   signature: Buffer;
 }
 
+/**
+ * Create an Apple App Attest verification provider.
+ *
+ * The provider pins Apple's App Attestation Root CA and verifies certificate
+ * path signatures and constraints, nonce, App ID, AAGUID environment, key ID,
+ * COSE key, assertion signature, monotonic counter, and configured distribution
+ * policy. It does not issue or persist challenges; compose it with
+ * `createDeviceAttestation` for the complete Better Auth flow.
+ *
+ * @throws {TypeError} When application policy or configured bounds are invalid.
+ */
 export function appAttest(
   options: AppAttestOptions,
 ): DeviceAttestationProvider {

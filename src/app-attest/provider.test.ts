@@ -110,6 +110,129 @@ describe("App Attest provider", () => {
     });
   });
 
+  it("accepts an assertion without extensions only under compatibility policy", async () => {
+    const fixture = await createAssertionFixture(undefined);
+    const provider = createAssertionProvider({
+      presence: "if-present",
+      allowedValidationCategories: [2, 4],
+      validateBundleVersion: () => true,
+    });
+
+    await expect(provider.verifyAssertion(fixture.input)).resolves.toEqual({
+      counter: 1,
+      extensionsPresent: false,
+    });
+  });
+
+  it.each([
+    {
+      name: "a replayed counter",
+      mutate: (input: AssertionInput) => ({
+        ...input,
+        credential: { ...input.credential, counter: 1 },
+      }),
+      reason: "assertion_counter_not_advanced",
+    },
+    {
+      name: "a different stored environment",
+      mutate: (input: AssertionInput) => ({
+        ...input,
+        credential: {
+          ...input.credential,
+          environment: "development" as const,
+        },
+      }),
+      reason: "stored_environment_mismatch",
+    },
+    {
+      name: "a different key identifier",
+      mutate: (input: AssertionInput) => ({
+        ...input,
+        keyId: Buffer.alloc(32, 0xff),
+      }),
+      reason: "credential_key_id_mismatch",
+    },
+    {
+      name: "a missing stored public key",
+      mutate: (input: AssertionInput) => ({
+        ...input,
+        credential: { ...input.credential, publicKey: null },
+      }),
+      reason: "missing_credential_public_key",
+    },
+    {
+      name: "an invalid stored public key",
+      mutate: (input: AssertionInput) => ({
+        ...input,
+        credential: {
+          ...input.credential,
+          publicKey: Buffer.from("not-spki").toString("base64"),
+        },
+      }),
+      reason: "invalid_credential_public_key",
+    },
+  ])("rejects $name", async ({ mutate, reason }) => {
+    const fixture = await createAssertionFixture({
+      bundleVersion: "42",
+      validationCategory: 4,
+    });
+    const provider = createAssertionProvider({
+      presence: "required",
+      allowedValidationCategories: [2, 4],
+      validateBundleVersion: () => true,
+    });
+
+    await expectFailureReasonAsync(
+      () => provider.verifyAssertion(mutate(fixture.input)),
+      reason,
+    );
+  });
+
+  it("rejects an assertion for a different App ID", async () => {
+    const fixture = await createAssertionFixture(
+      { bundleVersion: "42", validationCategory: 4 },
+      { rpId: "1234567890.com.example.other" },
+    );
+    const provider = createAssertionProvider({
+      presence: "required",
+      allowedValidationCategories: [2, 4],
+      validateBundleVersion: () => true,
+    });
+
+    await expectFailureReasonAsync(
+      () => provider.verifyAssertion(fixture.input),
+      "rp_id_hash_mismatch",
+    );
+  });
+
+  it("rejects a mutated assertion signature", async () => {
+    const fixture = await createAssertionFixture({
+      bundleVersion: "42",
+      validationCategory: 4,
+    });
+    const decoded = (await cbor.decodeFirst(fixture.input.evidence)) as {
+      authenticatorData: Uint8Array;
+      signature: Uint8Array;
+    };
+    const signature = Buffer.from(decoded.signature);
+    const signatureIndex = signature.length - 1;
+    signature[signatureIndex] = (signature[signatureIndex] ?? 0) ^ 1;
+    const evidence = await cbor.encodeAsync({
+      authenticatorData: decoded.authenticatorData,
+      signature,
+    });
+    const provider = createAssertionProvider({
+      presence: "required",
+      allowedValidationCategories: [2, 4],
+      validateBundleVersion: () => true,
+    });
+
+    await expectFailureReasonAsync(
+      () => provider.verifyAssertion({ ...fixture.input, evidence }),
+      "invalid_assertion_signature",
+    );
+  });
+
   it.each([
     {
       name: "disallowed category",
@@ -170,15 +293,16 @@ function createAssertionProvider(extensions: {
 
 async function createAssertionFixture(
   extensions: { bundleVersion: string; validationCategory: number } | undefined,
+  options: { rpId?: string; counter?: number } = {},
 ) {
   const { privateKey, publicKey } = generateKeyPairSync("ec", {
     namedCurve: "prime256v1",
   });
   const clientDataHash = sha256(Buffer.from("assertion-client-data", "utf8"));
   const authenticatorData = Buffer.concat([
-    sha256(Buffer.from(APP_ID, "utf8")),
+    sha256(Buffer.from(options.rpId ?? APP_ID, "utf8")),
     Buffer.from([0]),
-    Buffer.from([0, 0, 0, 1]),
+    counterBytes(options.counter ?? 1),
     ...(extensions === undefined
       ? []
       : [
@@ -219,6 +343,10 @@ async function createAssertionFixture(
   };
 }
 
+type AssertionInput = Awaited<
+  ReturnType<typeof createAssertionFixture>
+>["input"];
+
 function keyIdentifier(publicKey: KeyObject): Buffer {
   const jwk = publicKey.export({ format: "jwk" });
   if (!jwk.x || !jwk.y) {
@@ -236,6 +364,12 @@ function keyIdentifier(publicKey: KeyObject): Buffer {
 function categoryBytes(category: number): Buffer {
   const bytes = Buffer.alloc(4);
   bytes.writeUInt32LE(category);
+  return bytes;
+}
+
+function counterBytes(counter: number): Buffer {
+  const bytes = Buffer.alloc(4);
+  bytes.writeUInt32BE(counter);
   return bytes;
 }
 

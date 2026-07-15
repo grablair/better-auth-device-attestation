@@ -1,10 +1,10 @@
 # Device Attestation for Better Auth
 
-- Status: proposed implementation design
+- Status: implemented alpha design; stable-release requirements remain open
 - Target package: `@grablair/better-auth-device-attestation`
 - Initial provider: Apple App Attest
 - Target Better Auth line: 1.7
-- Last reviewed: 2026-07-14
+- Last reviewed: 2026-07-15
 
 ## 1. Overview
 
@@ -15,8 +15,8 @@ challenge issuance, evidence verification, persistent attestation credentials,
 assertion counters, user binding, short-lived grants, policy evaluation, and
 safe diagnostics.
 
-The initial release will support Apple App Attest on Node.js 20 or newer. The
-provider contract will allow a later Android Play Integrity provider without
+The current alpha supports Apple App Attest on Node.js 20 or newer. Its provider
+boundary leaves room for a later Android Play Integrity provider without
 pretending that Play Integrity has App Attest's persistent-key and assertion
 counter model.
 
@@ -226,7 +226,8 @@ The implementation will follow Better Auth's public plugin conventions:
   endpoints;
 - define the credential table through the plugin `schema` property so Better
   Auth's CLI can generate Drizzle, Prisma, or SQL schema changes;
-- support schema field/model-name overrides through a typed `schema` option;
+- add schema field/model-name overrides through a typed `schema` option before
+  the stable release;
 - use `ctx.context.adapter` and documented `internalAdapter` helpers rather than
   importing an application ORM;
 - use Better Auth's atomic `consumeOne`/verification consumption and
@@ -247,7 +248,7 @@ The package will not patch Better Auth options after initialization or locate
 other plugins by undocumented object shape. Optional OAuth composition will be
 created explicitly by the host configuration.
 
-## 10. Proposed public API
+## 10. Alpha public API
 
 The API separates the provider, the Better Auth plugin, and optional OAuth
 composition:
@@ -342,45 +343,33 @@ native helper package can compose the typed HTTP client with Swift, Kotlin, or
 React Native bridges without making native code a dependency of every server
 consumer.
 
-## 11. Provider contract
+## 11. Alpha provider contract
 
-The shared contract models capabilities rather than forcing every platform into
-an App Attest-shaped lifecycle:
+The alpha contract models the persistent credential lifecycle App Attest needs:
 
 ```ts
-interface DeviceAttestationProvider<Signals, StoredCredential> {
+interface DeviceAttestationProvider {
   readonly id: string;
-  readonly capabilities: {
-    persistentCredential: boolean;
-    registrationEvidence: boolean;
-    interactionEvidence: boolean;
-    monotonicCounter: boolean;
-  };
-
-  verifyEvidence(input: ProviderEvidenceInput): Promise<
-    | {
-        mode: "credential-registration";
-        assurance: AttestationAssurance<Signals>;
-        credential: StoredCredential;
-      }
-    | {
-        mode: "credential-assertion";
-        assurance: AttestationAssurance<Signals>;
-        nextCounter: number;
-      }
-    | {
-        mode: "interaction-verdict";
-        assurance: AttestationAssurance<Signals>;
-        replayKey?: string;
-      }
-  >;
+  readonly maxEvidenceBytes: number;
+  decodeKeyId(value: string): Uint8Array;
+  verifyRegistration(input: RegistrationInput): Promise<RegistrationResult>;
+  verifyAssertion(input: AssertionInput): Promise<AssertionResult>;
 }
 ```
 
-The normalized assurance contains only shared facts:
+Registration results contain the verified application, environment, SPKI public
+key, zero counter, normalized distribution metadata, and an optional opaque
+untrusted receipt. Assertion results contain only the advanced counter and
+normalized distribution metadata.
+
+This interface intentionally reflects the first implemented provider. Android
+Play Integrity does not have the same persistent credential and counter model;
+before Android support, the boundary will evolve through a reviewed capability
+contract without weakening the App Attest invariants. A future normalized
+assurance type may contain only shared facts:
 
 ```ts
-interface AttestationAssurance<Signals> {
+interface FutureAttestationAssurance<Signals> {
   provider: string;
   applicationId: string;
   environment: "development" | "production";
@@ -597,7 +586,8 @@ The plugin contributes one model through its schema:
 | `revocationReason`   | string, optional | Closed, non-sensitive reason enum; never a raw exception or user-supplied value.                                 |
 | `lastUsedAt`         | date, optional   | Last accepted assertion or grant redemption.                                                                     |
 
-The plugin accepts Better Auth-style model and field-name overrides. It does not
+The alpha does not yet accept model and field-name overrides. Supporting Better
+Auth-style overrides remains a stable-release requirement. The package does not
 expose a Drizzle or Prisma schema as its canonical API; generated examples are
 documentation, while the plugin schema remains authoritative.
 
@@ -639,11 +629,14 @@ request is rejected and must obtain a fresh challenge and assertion. We will not
 accept an out-of-order lower assertion merely because it has a different counter
 value.
 
-The schema uses Better Auth's `bigint: true` database attribute while the API
-keeps the value as a JavaScript number, which safely represents every UInt32.
-Adapter contract tests must cover `2147483648`, `4294967294`, and `4294967295`.
-After accepting `4294967295`, the credential is retired and the client must
-register a new key; zero or any lower value is never accepted as wraparound.
+The schema uses Better Auth's `bigint: true` database attribute while the
+provider API keeps the value as a JavaScript number, which safely represents
+every UInt32. Adapters such as PostgreSQL may materialize `bigint` as a decimal
+string; the plugin strictly normalizes only canonical unsigned decimal strings
+at the adapter boundary before provider verification. Adapter contract tests
+must cover `2147483648`, `4294967294`, and `4294967295`. After accepting
+`4294967295`, the credential is retired and the client must register a new key;
+zero or any lower value is never accepted as wraparound.
 
 ### First user binding
 
@@ -1188,6 +1181,15 @@ add Android fields to the App Attest credential model or flatten all provider
 signals into one trust score.
 
 ## 26. Testing strategy
+
+The current alpha automates the official Apple production vector, synthetic
+production and development registration vectors, distribution-extension
+regressions, mutated verifier inputs, deterministic malformed-CBOR sampling,
+memory-adapter lifecycle and concurrency checks, a PostgreSQL atomicity and
+UInt32 lane, inferred-client type checks, enforced coverage thresholds, and
+packed ESM/declaration validation. Sanitized real-device vectors, the remaining
+adapter matrix, and end-to-end OAuth token issuance remain stable-release
+criteria rather than completed alpha coverage.
 
 ### Parser and verifier tests
 
