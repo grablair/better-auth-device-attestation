@@ -5,6 +5,7 @@ export {
   type AppAttestOptions,
   type UntrustedAppAttestReceipt,
 } from "./app-attest/provider.js";
+export type { AppAttestPlatform } from "./app-attest/platform-policy.js";
 export {
   DEVICE_ATTESTATION_ERROR_CODES,
   DeviceAttestationError,

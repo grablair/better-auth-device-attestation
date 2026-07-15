@@ -12,9 +12,14 @@ import {
 
 import { rejection } from "../errors.js";
 import { equalBytes } from "../protocol/crypto.js";
+import {
+  type AppAttestPlatform,
+  verifyAppAttestPlatformPolicy,
+} from "./platform-policy.js";
 import { APPLE_APP_ATTESTATION_ROOT_CA_PEM } from "./root-certificate.js";
 
 const APP_ATTEST_NONCE_OID = "1.2.840.113635.100.8.2";
+const APP_ATTEST_ACL_BLOB_OID = "1.2.840.113635.100.8.6";
 const APP_ATTEST_CREDENTIAL_EKU = "1.2.840.113635.100.4.24";
 const ROOT_DER = decodePemCertificate(APPLE_APP_ATTESTATION_ROOT_CA_PEM);
 
@@ -26,6 +31,7 @@ export interface VerifiedCredentialCertificate {
 
 export async function verifyAppAttestCertificateChain(
   presentedChain: Uint8Array[],
+  platform: AppAttestPlatform,
   now = new Date(),
 ): Promise<VerifiedCredentialCertificate> {
   if (presentedChain.length < 2 || presentedChain.length > 4) {
@@ -105,6 +111,10 @@ export async function verifyAppAttestCertificateChain(
   if (!nonceExtension) {
     throw rejection("nonce", "missing_attestation_nonce");
   }
+  verifyAppAttestPlatformPolicy(
+    platform,
+    leaf.getExtension(APP_ATTEST_ACL_BLOB_OID)?.value,
+  );
 
   return {
     publicKeyRaw: Buffer.from(publicKeyRaw),

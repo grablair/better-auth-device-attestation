@@ -38,6 +38,7 @@ export type DeviceAttestationFailureStage =
   | "nonce"
   | "app-identity"
   | "environment"
+  | "platform-policy"
   | "distribution-metadata"
   | "signature"
   | "counter"
@@ -53,6 +54,8 @@ export type DeviceAttestationFailureStage =
  * identifiers, keys, proofs, credentials, or request bodies.
  */
 export interface DeviceAttestationDiagnosticMeasurements {
+  /** Encoded evidence length when rejection happens before decoding. */
+  encodedEvidenceCharacters?: number;
   /** Decoded provider evidence size. */
   evidenceBytes?: number;
   /** Authenticator-data size. */

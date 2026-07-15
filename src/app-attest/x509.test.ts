@@ -28,12 +28,25 @@ describe("App Attest certificate chain", () => {
   it("verifies the official chain at its documented validation time", async () => {
     const result = await verifyAppAttestCertificateChain(
       officialChain,
+      "ios",
       new Date("2026-04-21T18:13:12.153Z"),
     );
 
     expect(result.publicKeyRaw).toHaveLength(65);
     expect(result.publicKeySpki).toHaveLength(91);
     expect(result.nonce).toHaveLength(32);
+  });
+
+  it("rejects an iOS ACL Blob under the macOS platform policy", async () => {
+    await expectFailureReason(
+      () =>
+        verifyAppAttestCertificateChain(
+          officialChain,
+          "macos",
+          new Date("2026-04-21T18:13:12.153Z"),
+        ),
+      "macos_acl_policy_mismatch",
+    );
   });
 
   it.each([
@@ -48,7 +61,7 @@ describe("App Attest certificate chain", () => {
     },
   ])("rejects malformed chain input: $reason", async ({ chain, reason }) => {
     await expectFailureReason(
-      () => verifyAppAttestCertificateChain(chain),
+      () => verifyAppAttestCertificateChain(chain, "ios"),
       reason,
     );
   });
@@ -58,6 +71,7 @@ describe("App Attest certificate chain", () => {
       () =>
         verifyAppAttestCertificateChain(
           officialChain,
+          "ios",
           new Date("2050-01-01T00:00:00.000Z"),
         ),
       "certificate_outside_validity",
@@ -73,6 +87,7 @@ describe("App Attest certificate chain", () => {
       () =>
         verifyAppAttestCertificateChain(
           [mutatedLeaf, ...(officialChain.slice(1) ?? [])],
+          "ios",
           new Date("2026-04-21T18:13:12.153Z"),
         ),
       "invalid_certificate_signature",

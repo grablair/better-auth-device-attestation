@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { APIError } from "better-auth/api";
 import type { StoredAuthorizationQuery } from "@better-auth/oauth-provider";
 import { describe, expect, it, vi } from "vitest";
 
@@ -317,6 +318,61 @@ describe("device attestation lifecycle and concurrency", () => {
         },
       }),
     ).rejects.toMatchObject({ status: "FORBIDDEN" });
+    expect(report).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "unknown-provider",
+        stage: "request",
+        reason: "unknown_provider",
+      }),
+    );
+  });
+
+  it("contains a synchronous diagnostic reporter failure", async () => {
+    const report = vi.fn(() => {
+      throw new Error("telemetry failed synchronously");
+    });
+    const harness = await createHarness({ report });
+
+    await expect(
+      harness.auth.api.createDeviceAttestationChallenge({
+        body: {
+          provider: "unknown-provider",
+          applicationId: APP_ID,
+          operation: "register",
+          keyId: KEY_ID.toString("base64"),
+          purpose: "credential-registration",
+        },
+      }),
+    ).rejects.toMatchObject({ status: "FORBIDDEN" });
+    expect(report).toHaveBeenCalledOnce();
+  });
+
+  it("does not wait for a stalled diagnostic reporter", async () => {
+    const report = vi.fn(() => new Promise<void>(() => undefined));
+    const harness = await createHarness({ report });
+
+    const result = await Promise.race([
+      harness.auth.api
+        .createDeviceAttestationChallenge({
+          body: {
+            provider: "unknown-provider",
+            applicationId: APP_ID,
+            operation: "register",
+            keyId: KEY_ID.toString("base64"),
+            purpose: "credential-registration",
+          },
+        })
+        .then(
+          () => "unexpected-success",
+          (error: unknown) =>
+            error instanceof APIError ? error.status : "unexpected-error",
+        ),
+      new Promise<string>((resolve) => {
+        setTimeout(() => resolve("reporter-timeout"), 100);
+      }),
+    ]);
+
+    expect(result).toBe("FORBIDDEN");
     expect(report).toHaveBeenCalledWith(
       expect.objectContaining({
         provider: "unknown-provider",

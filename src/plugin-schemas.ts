@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { standardBase64Length } from "./encoding/base64.js";
 import { MAX_APPLICATION_ID_LENGTH } from "./limits.js";
 export const oauthBindingSchema = z.object({
   clientId: z.string().min(1).max(256),
@@ -30,11 +31,13 @@ export const challengeBodySchema = z.discriminatedUnion("operation", [
   }),
 ]);
 
-export const verifyBodySchema = z.object({
-  challengeToken: z.string().min(1).max(128),
-  keyId: z.string().min(1).max(1024),
-  evidence: z.string().min(1),
-});
+export function createVerifyBodySchema(maxEvidenceBytes: number) {
+  return z.object({
+    challengeToken: z.string().min(1).max(128),
+    keyId: z.string().min(1).max(1024),
+    evidence: z.string().min(1).max(standardBase64Length(maxEvidenceBytes)),
+  });
+}
 
 export const retireBodySchema = z.object({
   credentialId: z.string().min(1).max(512),

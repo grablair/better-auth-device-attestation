@@ -186,8 +186,9 @@ export interface DeviceAttestationOptions {
   /** Optional safe server-side rejection reporting. */
   diagnostics?: {
     /**
-     * Receive redacted structured events. Reporter failures are ignored so
-     * telemetry cannot replace the authentication result.
+     * Receive redacted structured events as a best-effort side effect. The
+     * authentication response does not wait for asynchronous delivery, and
+     * reporter failures cannot replace the authentication result.
      */
     report?: (event: DeviceAttestationDiagnosticEvent) => void | Promise<void>;
   };

@@ -21,33 +21,35 @@ export async function withPublicError<T>(
     return await action();
   } catch (error) {
     const { provider, operation } = context();
-    await reportDiagnostic(options, error, provider, operation);
+    reportDiagnostic(options, error, provider, operation);
     throw toPublicApiError(error);
   }
 }
 
-export async function reportDiagnostic(
+export function reportDiagnostic(
   options: DeviceAttestationOptions,
   error: unknown,
   provider: string,
   operation: DiagnosticOperation,
-): Promise<void> {
-  const report = options.diagnostics?.report;
-  if (!report) {
-    return;
-  }
-  const failure = normalizeFailure(error);
+): void {
   try {
-    await report({
-      provider,
-      operation,
-      stage: failure.stage,
-      reason: failure.reason,
-      retryable: failure.retryable,
-      ...(failure.measurements === undefined
-        ? {}
-        : { measurements: failure.measurements }),
-    });
+    const report = options.diagnostics?.report;
+    if (!report) {
+      return;
+    }
+    const failure = normalizeFailure(error);
+    void Promise.resolve(
+      report({
+        provider,
+        operation,
+        stage: failure.stage,
+        reason: failure.reason,
+        retryable: failure.retryable,
+        ...(failure.measurements === undefined
+          ? {}
+          : { measurements: failure.measurements }),
+      }),
+    ).catch(() => undefined);
   } catch {
     // Diagnostic delivery must not replace the original authentication result.
   }

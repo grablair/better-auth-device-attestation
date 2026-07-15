@@ -25,6 +25,7 @@ describe("App Attest provider", () => {
         applications: [
           {
             appId: "a".repeat(256),
+            platform: "ios",
             environment: "production",
             extensions: {
               presence: "required",
@@ -57,6 +58,7 @@ describe("App Attest provider", () => {
       applications: [
         {
           appId: APP_ID,
+          platform: "ios",
           environment: "production",
           extensions: {
             presence: "required",
@@ -93,6 +95,7 @@ describe("App Attest provider", () => {
       applications: [
         {
           appId: APP_ID,
+          platform: "ios",
           environment: "production",
           extensions: {
             presence: "required",
@@ -302,6 +305,7 @@ function createAssertionProvider(extensions: {
     applications: [
       {
         appId: APP_ID,
+        platform: "ios",
         environment: "production",
         extensions,
       },

@@ -73,6 +73,8 @@ const attestation = createDeviceAttestation({
         {
           // Apple App ID: Team ID followed by the bundle identifier.
           appId: "TEAMID.com.example.mobile",
+          // This is trusted server policy, not a client-supplied platform.
+          platform: "ios",
           environment: "production",
           extensions: {
             // Use "required" once every supported distributed build emits the
@@ -120,6 +122,10 @@ export const auth = betterAuth({
   ],
 });
 ```
+
+Set `platform: "macos"` for a native macOS application. The provider then
+requires Apple's signed ACL Blob to match the documented SIP and Full Security
+policy exactly before it trusts the attested key.
 
 Production and development applications must be separate entries with their
 matching environment. Configuring a development application never causes its
@@ -251,7 +257,9 @@ The diagnostic callback receives only:
 It never receives evidence, assertions, challenges, key identifiers, public
 keys, receipt bytes, OAuth codes, DPoP proofs or thumbprints, credentials, or
 request bodies. Client responses use stable generic Better Auth error codes and
-do not expose internal failure reasons.
+do not expose internal failure reasons. Diagnostic delivery is best effort and
+never delays the authentication response; asynchronous reporters must own their
+delivery deadlines, queues, and backpressure.
 
 ## Credential lifecycle
 

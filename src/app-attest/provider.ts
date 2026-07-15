@@ -18,6 +18,7 @@ import {
   type AppAttestExtensions,
 } from "./extensions.js";
 import { verifyAppAttestCertificateChain } from "./x509.js";
+import type { AppAttestPlatform } from "./platform-policy.js";
 
 const PRODUCTION_AAGUID = Buffer.concat([
   Buffer.from("appattest", "ascii"),
@@ -46,8 +47,10 @@ export type AppAttestExtensionPresence = "if-present" | "required";
 
 /** App Attest identity and distribution policy for one Apple App ID. */
 export interface AppAttestApplication {
-  /** Apple App ID in `TeamID.bundleIdentifier` form. */
+  /** Apple App ID, using the signing identifier on native macOS. */
   appId: string;
+  /** Apple platform whose signed certificate policy the server accepts. */
+  platform: AppAttestPlatform;
   /** App Attest AAGUID environment accepted for this application. */
   environment: DeviceAttestationEnvironment;
   /** Policy applied after extension structure has been strictly parsed. */
@@ -151,6 +154,7 @@ export function appAttest(
       });
       const certificate = await verifyAppAttestCertificateChain(
         envelope.certificates,
+        application.platform,
       );
 
       const expectedNonce = sha256(
@@ -353,6 +357,7 @@ function validateApplications(
     if (
       (application.environment !== "development" &&
         application.environment !== "production") ||
+      (application.platform !== "ios" && application.platform !== "macos") ||
       (application.extensions.presence !== "if-present" &&
         application.extensions.presence !== "required") ||
       typeof application.extensions.validateBundleVersion !== "function"

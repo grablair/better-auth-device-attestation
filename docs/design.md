@@ -268,6 +268,7 @@ const attestation = createDeviceAttestation({
       applications: [
         {
           appId: "TEAMID.com.example.mobile",
+          platform: "ios",
           environment: "production",
           extensions: {
             presence: "if-present",
@@ -311,6 +312,10 @@ export const auth = betterAuth({
   ],
 });
 ```
+
+`platform` is server-owned application policy. Native macOS applications use
+`"macos"`, which makes the certificate verifier require Apple's signed ACL Blob
+for SIP and Full Security before registration succeeds.
 
 `createDeviceAttestation()` returns one stateful composition object for one
 `betterAuth()` instance:
@@ -1029,7 +1034,7 @@ The host may configure a structured diagnostic sink:
 ```ts
 interface DeviceAttestationDiagnosticEvent {
   provider: string;
-  operation: "challenge" | "register" | "assert" | "grant";
+  operation: "challenge" | "verify" | "register" | "assert" | "grant";
   stage:
     | "request"
     | "challenge"
@@ -1039,6 +1044,7 @@ interface DeviceAttestationDiagnosticEvent {
     | "nonce"
     | "app-identity"
     | "environment"
+    | "platform-policy"
     | "distribution-metadata"
     | "signature"
     | "counter"
@@ -1049,6 +1055,7 @@ interface DeviceAttestationDiagnosticEvent {
   reason: string;
   retryable: boolean;
   measurements?: {
+    encodedEvidenceCharacters?: number;
     evidenceBytes?: number;
     authenticatorDataBytes?: number;
     flags?: number;
@@ -1071,6 +1078,11 @@ The plugin never includes these values in a diagnostic event:
 - DPoP proofs, JWKs, or thumbprints;
 - email addresses, passwords, cookies, credentials, or request bodies;
 - arbitrary thrown error messages or stacks from expected rejection.
+
+Reporting is a best-effort side effect. The plugin contains synchronous throws
+and asynchronous rejections but does not await reporter completion on the
+authentication path. Hosts own telemetry deadlines, bounded queues, and
+backpressure.
 
 Unexpected failures can be correlated through host telemetry request IDs, but
 the plugin will not generate a device correlation identifier. The default

@@ -42,8 +42,8 @@ import { resolveDeviceAttestationOptions } from "./plugin-options.js";
 import {
   challengeBodySchema,
   challengeStateSchema,
+  createVerifyBodySchema,
   retireBodySchema,
-  verifyBodySchema,
 } from "./plugin-schemas.js";
 import { createClientData, hashOAuthBinding } from "./protocol/binding.js";
 import {
@@ -80,6 +80,14 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
   const resolved = resolveDeviceAttestationOptions(options);
   const { providers } = resolved;
   const oauthPurpose = options.purposes.oauthAuthorization;
+  const verifyBodySchema = createVerifyBodySchema(
+    Math.max(
+      ...Array.from(
+        providers.values(),
+        (provider) => provider.maxEvidenceBytes,
+      ),
+    ),
+  );
 
   let runtime: RuntimeContext | undefined;
 
@@ -457,7 +465,7 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
           try {
             await consumeAndBindGrant(requireRuntime(runtime), info);
           } catch (error) {
-            await reportDiagnostic(options, error, "unknown", "grant");
+            reportDiagnostic(options, error, "unknown", "grant");
             throw toPublicApiError(error);
           }
 

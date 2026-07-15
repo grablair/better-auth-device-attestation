@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DeviceAttestationError } from "../errors.js";
 import { sha256 } from "../protocol/crypto.js";
+import type { AppAttestPlatform } from "./platform-policy.js";
 import { appAttest } from "./provider.js";
 import { verifyAppAttestCertificateChain } from "./x509.js";
 
@@ -192,6 +193,15 @@ describe("App Attest registration policy", () => {
     () => createProvider("production", [-1], () => true),
     () =>
       appAttest({
+        applications: [
+          {
+            ...application("production", [2], () => true),
+            platform: "tvos" as AppAttestPlatform,
+          },
+        ],
+      }),
+    () =>
+      appAttest({
         applications: [application("production", [2], () => true)],
         maxEvidenceBytes: 0,
       }),
@@ -320,6 +330,7 @@ function application(
 ) {
   return {
     appId: APP_ID,
+    platform: "ios",
     environment,
     extensions: {
       presence,
