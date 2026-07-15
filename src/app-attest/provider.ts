@@ -45,7 +45,7 @@ export type UntrustedAppAttestReceipt = Uint8Array & {
 /** Policy for evidence that does not contain Apple distribution extensions. */
 export type AppAttestExtensionPresence = "if-present" | "required";
 
-/** App Attest identity and distribution policy for one Apple App ID. */
+/** App Attest identity and optional distribution policy for one Apple App ID. */
 export interface AppAttestApplication {
   /** Apple App ID, using the signing identifier on native macOS. */
   appId: string;
@@ -53,8 +53,11 @@ export interface AppAttestApplication {
   platform: AppAttestPlatform;
   /** App Attest AAGUID environment accepted for this application. */
   environment: DeviceAttestationEnvironment;
-  /** Policy applied after extension structure has been strictly parsed. */
-  extensions: {
+  /**
+   * Optional policy applied after extension structure has been strictly parsed.
+   * When omitted, extension metadata does not participate in verification.
+   */
+  extensions?: {
     /** Whether otherwise-valid evidence may omit the Apple extensions. */
     presence: AppAttestExtensionPresence;
     /**
@@ -105,13 +108,18 @@ interface AssertionEnvelope {
   signature: Buffer;
 }
 
+interface DistributionMetadata {
+  extensionsPresent: boolean;
+  verified?: AppAttestExtensions;
+}
+
 /**
  * Create an Apple App Attest verification provider.
  *
  * The provider pins Apple's App Attestation Root CA and verifies certificate
  * path signatures and constraints, nonce, App ID, AAGUID environment, key ID,
- * COSE key, assertion signature, monotonic counter, and configured distribution
- * policy. It does not issue or persist challenges; compose it with
+ * COSE key, assertion signature, monotonic counter, and any configured
+ * distribution policy. It does not issue or persist challenges; compose it with
  * `createDeviceAttestation` for the complete Better Auth flow.
  *
  * @throws {TypeError} When application policy or configured bounds are invalid.
@@ -187,7 +195,7 @@ export function appAttest(
         certificate.publicKeyRaw,
       );
 
-      const extensions = await verifyDistributionPolicy(
+      const distributionMetadata = await verifyDistributionPolicy(
         authData.extensions,
         application,
       );
@@ -197,7 +205,7 @@ export function appAttest(
         application,
         certificate.publicKeySpki,
         envelope.receipt,
-        extensions,
+        distributionMetadata,
       );
     },
     async verifyAssertion(input) {
@@ -238,11 +246,11 @@ export function appAttest(
         throw rejection("signature", "invalid_assertion_signature");
       }
 
-      const extensions = await verifyDistributionPolicy(
+      const distributionMetadata = await verifyDistributionPolicy(
         authData.extensions,
         application,
       );
-      return assertionResult(authData.counter, extensions);
+      return assertionResult(authData.counter, distributionMetadata);
     },
   };
 }
@@ -354,24 +362,28 @@ function validateApplications(
         `App Attest application IDs must be non-empty, unique, and at most ${MAX_APPLICATION_ID_LENGTH} characters.`,
       );
     }
+    const extensions = application.extensions;
     if (
       (application.environment !== "development" &&
         application.environment !== "production") ||
       (application.platform !== "ios" && application.platform !== "macos") ||
-      (application.extensions.presence !== "if-present" &&
-        application.extensions.presence !== "required") ||
-      typeof application.extensions.validateBundleVersion !== "function"
+      (extensions !== undefined &&
+        extensions.presence !== "if-present" &&
+        extensions.presence !== "required") ||
+      (extensions !== undefined &&
+        typeof extensions.validateBundleVersion !== "function")
     ) {
       throw new TypeError("App Attest application policy is invalid.");
     }
     if (
-      application.extensions.allowedValidationCategories.length === 0 ||
-      application.extensions.allowedValidationCategories.some(
-        (category) =>
-          !Number.isSafeInteger(category) ||
-          category < 0 ||
-          category > 0xffff_ffff,
-      )
+      extensions !== undefined &&
+      (extensions.allowedValidationCategories.length === 0 ||
+        extensions.allowedValidationCategories.some(
+          (category) =>
+            !Number.isSafeInteger(category) ||
+            category < 0 ||
+            category > 0xffff_ffff,
+        ))
     ) {
       throw new TypeError(
         "Each App Attest application requires valid allowed validation categories.",
@@ -416,44 +428,43 @@ function verifyEnvironment(
 async function verifyDistributionPolicy(
   container: unknown,
   application: AppAttestApplication,
-): Promise<AppAttestExtensions | undefined> {
+): Promise<DistributionMetadata> {
+  const policy = application.extensions;
+  if (policy === undefined) {
+    return { extensionsPresent: container !== undefined };
+  }
   if (container === undefined) {
-    if (application.extensions.presence === "required") {
+    if (policy.presence === "required") {
       throw rejection("distribution-metadata", "extensions_required");
     }
-    return undefined;
+    return { extensionsPresent: false };
   }
 
   const extensions = parseAppAttestExtensions(container);
   if (
-    !application.extensions.allowedValidationCategories.includes(
-      extensions.validationCategory,
-    )
+    !policy.allowedValidationCategories.includes(extensions.validationCategory)
   ) {
     throw rejection("distribution-metadata", "validation_category_disallowed");
   }
-  if (
-    !(await application.extensions.validateBundleVersion(
-      extensions.bundleVersion,
-    ))
-  ) {
+  if (!(await policy.validateBundleVersion(extensions.bundleVersion))) {
     throw rejection("distribution-metadata", "bundle_version_disallowed");
   }
-  return extensions;
+  return { extensionsPresent: true, verified: extensions };
 }
 
 function registrationResult(
   application: AppAttestApplication,
   publicKeySpki: Uint8Array,
   receipt: Uint8Array,
-  extensions: AppAttestExtensions | undefined,
+  distributionMetadata: DistributionMetadata,
 ): RegistrationVerificationResult {
+  const extensions = distributionMetadata.verified;
   return {
     applicationId: application.appId,
     environment: application.environment,
     publicKey: Buffer.from(publicKeySpki).toString("base64"),
     counter: 0,
-    extensionsPresent: extensions !== undefined,
+    extensionsPresent: distributionMetadata.extensionsPresent,
     untrustedReceipt: Buffer.from(receipt),
     ...(extensions === undefined
       ? {}
@@ -466,11 +477,12 @@ function registrationResult(
 
 function assertionResult(
   counter: number,
-  extensions: AppAttestExtensions | undefined,
+  distributionMetadata: DistributionMetadata,
 ): AssertionVerificationResult {
+  const extensions = distributionMetadata.verified;
   return {
     counter,
-    extensionsPresent: extensions !== undefined,
+    extensionsPresent: distributionMetadata.extensionsPresent,
     ...(extensions === undefined
       ? {}
       : {

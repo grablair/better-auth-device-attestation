@@ -145,6 +145,45 @@ describe("App Attest provider", () => {
     });
   });
 
+  it("ignores distribution metadata when no extension policy is configured", async () => {
+    const fixture = await createAssertionFixture({
+      bundleVersion: "future-build",
+      validationCategory: 5,
+    });
+    const provider = appAttest({
+      applications: [
+        {
+          appId: APP_ID,
+          platform: "ios",
+          environment: "production",
+        },
+      ],
+    });
+
+    await expect(provider.verifyAssertion(fixture.input)).resolves.toEqual({
+      counter: 1,
+      extensionsPresent: true,
+    });
+  });
+
+  it("accepts missing distribution metadata when no extension policy is configured", async () => {
+    const fixture = await createAssertionFixture(undefined);
+    const provider = appAttest({
+      applications: [
+        {
+          appId: APP_ID,
+          platform: "ios",
+          environment: "production",
+        },
+      ],
+    });
+
+    await expect(provider.verifyAssertion(fixture.input)).resolves.toEqual({
+      counter: 1,
+      extensionsPresent: false,
+    });
+  });
+
   it.each([
     {
       name: "a replayed counter",
