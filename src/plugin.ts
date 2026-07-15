@@ -68,7 +68,7 @@ import type {
   StoredAttestationCredential,
 } from "./types.js";
 
-const PLUGIN_VERSION = "0.1.0-alpha.1";
+const PLUGIN_VERSION = "0.1.0-alpha.3";
 
 /**
  * Create a stateful Better Auth device-attestation composition.
