@@ -2,7 +2,6 @@
   "name": "@grablair/better-auth-device-attestation",
   "version": "0.1.0-alpha.0",
   "description": "Device attestation for Better Auth, starting with Apple App Attest.",
-  "private": true,
   "type": "module",
   "sideEffects": [
     "./dist/app-attest/x509.js"
