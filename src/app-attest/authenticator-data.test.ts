@@ -134,7 +134,20 @@ describe("parseAuthenticatorData", () => {
     });
   });
 
-  it("rejects assertion authenticator data with AT set", async () => {
+  it("accepts Apple's fixed assertion data when the AT bit is set", () => {
+    const input = createFixedAuthenticatorData(AUTHENTICATOR_DATA_FLAGS.AT, 9);
+
+    const result = parseAuthenticatorData(input, {
+      mode: "assertion",
+      maxBytes: 4096,
+    });
+
+    expect(result.flags).toBe(AUTHENTICATOR_DATA_FLAGS.AT);
+    expect(result.counter).toBe(9);
+    expect(result.attestedCredentialData).toBeUndefined();
+  });
+
+  it("rejects actual attested credential bytes in an assertion", async () => {
     const input = await createAttestationAuthenticatorData();
 
     expectFailureReason(
@@ -143,7 +156,7 @@ describe("parseAuthenticatorData", () => {
           mode: "assertion",
           maxBytes: 4096,
         }),
-      "unexpected_attested_credential_data",
+      "unexpected_authenticator_data",
     );
   });
 

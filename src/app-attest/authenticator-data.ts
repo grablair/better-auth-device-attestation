@@ -60,19 +60,16 @@ export function parseAuthenticatorData(
     });
   }
 
-  if (options.mode === "assertion" && hasAttestedCredentialData) {
-    throw rejection(
-      "authenticator-data",
-      "unexpected_attested_credential_data",
-      { flags },
-    );
-  }
-
   let offset = FIXED_BYTES;
   let attestedCredentialData:
     ParsedAuthenticatorData["attestedCredentialData"] | undefined;
 
-  if (hasAttestedCredentialData) {
+  // App Attest assertions use Apple's simplified authenticator-data profile.
+  // Some production assertions set the WebAuthn AT bit even though the fixed
+  // 37-byte assertion header is not followed by attested credential data. Only
+  // registrations carry and parse that structure; assertion trailing bytes are
+  // still required to be a single valid extension container below.
+  if (options.mode === "attestation" && hasAttestedCredentialData) {
     const credentialHeaderEnd = offset + AAGUID_BYTES + CREDENTIAL_LENGTH_BYTES;
     if (credentialHeaderEnd > raw.length) {
       throw rejection("authenticator-data", "truncated_credential_header", {

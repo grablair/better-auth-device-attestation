@@ -5,6 +5,7 @@ import cbor from "cbor";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { appAttest } from "./provider.js";
+import { AUTHENTICATOR_DATA_FLAGS } from "./authenticator-data.js";
 import type { StoredAttestationCredential } from "../types.js";
 import { sha256 } from "../protocol/crypto.js";
 
@@ -137,6 +138,26 @@ describe("App Attest provider", () => {
       presence: "if-present",
       allowedValidationCategories: [2, 4],
       validateBundleVersion: () => true,
+    });
+
+    await expect(provider.verifyAssertion(fixture.input)).resolves.toEqual({
+      counter: 1,
+      extensionsPresent: false,
+    });
+  });
+
+  it("verifies a production assertion whose fixed header has the AT bit set", async () => {
+    const fixture = await createAssertionFixture(undefined, {
+      flags: AUTHENTICATOR_DATA_FLAGS.AT,
+    });
+    const provider = appAttest({
+      applications: [
+        {
+          appId: APP_ID,
+          platform: "ios",
+          environment: "production",
+        },
+      ],
     });
 
     await expect(provider.verifyAssertion(fixture.input)).resolves.toEqual({
@@ -354,7 +375,7 @@ function createAssertionProvider(extensions: {
 
 async function createAssertionFixture(
   extensions: { bundleVersion: string; validationCategory: number } | undefined,
-  options: { rpId?: string; counter?: number } = {},
+  options: { rpId?: string; counter?: number; flags?: number } = {},
 ) {
   const { privateKey, publicKey } = generateKeyPairSync("ec", {
     namedCurve: "prime256v1",
@@ -362,7 +383,7 @@ async function createAssertionFixture(
   const clientDataHash = sha256(Buffer.from("assertion-client-data", "utf8"));
   const authenticatorData = Buffer.concat([
     sha256(Buffer.from(options.rpId ?? APP_ID, "utf8")),
-    Buffer.from([0]),
+    Buffer.from([options.flags ?? 0]),
     counterBytes(options.counter ?? 1),
     ...(extensions === undefined
       ? []
