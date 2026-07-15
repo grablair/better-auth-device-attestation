@@ -1,6 +1,6 @@
 {
   "name": "@grablair/better-auth-device-attestation",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Device attestation for Better Auth, starting with Apple App Attest.",
   "type": "module",
   "sideEffects": [
@@ -41,11 +41,11 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "default": "./dist/index.js"
     },
     "./client": {
       "types": "./dist/client.d.ts",
-      "import": "./dist/client.js"
+      "default": "./dist/client.js"
     }
   },
   "publishConfig": {

@@ -61,6 +61,18 @@ try {
     ],
     { cwd: consumer, stdio: "pipe" },
   );
+  execFileSync(
+    execPath,
+    [
+      "--input-type=commonjs",
+      "--eval",
+      [
+        'require.resolve("@grablair/better-auth-device-attestation");',
+        'require.resolve("@grablair/better-auth-device-attestation/client");',
+      ].join("\n"),
+    ],
+    { cwd: consumer, stdio: "pipe" },
+  );
 
   const installedPackage = JSON.parse(
     readFileSync(
