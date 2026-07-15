@@ -1,5 +1,26 @@
-/**
- * Public entry point. The implementation will follow the approved design in
- * docs/design.md.
- */
-export {};
+export {
+  appAttest,
+  type AppAttestApplication,
+  type AppAttestExtensionPresence,
+  type AppAttestOptions,
+  type UntrustedAppAttestReceipt,
+} from "./app-attest/provider.js";
+export {
+  DEVICE_ATTESTATION_ERROR_CODES,
+  DeviceAttestationError,
+  type DeviceAttestationDiagnosticEvent,
+  type DeviceAttestationFailureStage,
+  type DeviceAttestationPublicErrorCode,
+} from "./errors.js";
+export { createDeviceAttestation } from "./plugin.js";
+export type {
+  AssertionVerificationResult,
+  DeviceAttestationComposition,
+  DeviceAttestationEnvironment,
+  DeviceAttestationOptions,
+  DeviceAttestationProvider,
+  OAuthAuthorizationBinding,
+  RegistrationVerificationResult,
+  StoredAttestationCredential,
+  VerifiedAttestationGrant,
+} from "./types.js";

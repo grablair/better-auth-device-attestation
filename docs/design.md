@@ -319,8 +319,6 @@ interface DeviceAttestationComposition {
   serverPlugin: BetterAuthPlugin;
 
   protectOAuthProvider<T extends OAuthProviderOptions>(options: T): T;
-
-  verifyGrant(input: VerifyGrantInput): Promise<VerifiedAttestationGrant>;
 }
 ```
 
@@ -415,6 +413,7 @@ Registration request:
 ```json
 {
   "provider": "app-attest",
+  "applicationId": "TEAMID.com.example.mobile",
   "operation": "register",
   "keyId": "base64-apple-key-identifier",
   "purpose": "credential-registration"
@@ -430,6 +429,7 @@ OAuth request:
 ```json
 {
   "provider": "app-attest",
+  "applicationId": "TEAMID.com.example.mobile",
   "operation": "assert",
   "keyId": "base64-apple-key-identifier",
   "purpose": "oauth-authorization",
@@ -581,7 +581,7 @@ The plugin contributes one model through its schema:
 | `provider`           | string           | Indexed provider ID.                                                                                             |
 | `applicationId`      | string           | Indexed App ID or provider application identity.                                                                 |
 | `environment`        | string           | `development` or `production`.                                                                                   |
-| `publicKey`          | string, optional | Base64url SPKI while usable; input/returned disabled in schema metadata.                                         |
+| `publicKey`          | string, optional | Base64 SPKI while usable; input/returned disabled in schema metadata.                                            |
 | `counter`            | number           | Unsigned 32-bit counter stored with Better Auth `bigint: true`; valid range `0..4294967295`.                     |
 | `userId`             | string, optional | Better Auth user reference using `onDelete: "set null"`; a deletion hook first creates a revoked tombstone.      |
 | `bindingVersion`     | number           | Starts at zero and supports atomic first-user claiming.                                                          |
@@ -913,8 +913,8 @@ For an assertion, the implementation must:
 5. verify the RP ID hash for the stored application;
 6. decode the counter as unsigned big-endian UInt32 and require it to be greater
    than the stored counter;
-7. parse an extension map only when `ED` is set and reject trailing bytes when
-   it is clear;
+7. parse at most one extension map using the App Attest profile described below
+   and reject any bytes that do not form that one complete map;
 8. validate distribution signals through the same application policy used at
    registration;
 9. atomically advance the stored counter and last-use metadata;
@@ -925,16 +925,25 @@ Apple's official sample and a sanitized real-device fixture.
 
 ## 19. Authenticator extensions and iOS 27
 
-The authenticator parser follows WebAuthn flags, not assumptions about OS
-versions:
+The authenticator parser follows the App Attest data contract rather than
+assuming that every Apple field follows generic WebAuthn extension signaling:
 
 - `AT` (`0x40`) means attested credential data follows the fixed 37-byte prefix;
 - `ED` (`0x80`) means one CBOR extension map follows the attested credential
   data, or follows the fixed prefix for assertions;
-- `ED` clear means there are no extension bytes;
+- Apple's official App Attest validation fixture appends its distribution
+  extension map with `ED` clear, so the App Attest provider permits exactly one
+  trailing CBOR extension map after the structurally decoded credential key or
+  assertion prefix even when `ED` is clear;
 - the COSE credential key is decoded as one CBOR item to discover its actual
   length;
-- any bytes inconsistent with these flags are rejected.
+- any trailing bytes that do not decode to exactly one complete extension map
+  are rejected.
+
+The generic authenticator-data parser keeps this behavior behind an explicit App
+Attest profile option. Other WebAuthn consumers do not silently gain the
+unflagged-extension rule. Extension presence is determined from the decoded
+bytes, not inferred solely from `ED` and not from a client-supplied OS version.
 
 When present, extension containers may be represented by the installed CBOR
 decoder as either a plain JavaScript object or a `Map`. The parser:
@@ -961,9 +970,10 @@ policy:
 type AppAttestExtensionPresence = "if-present" | "required";
 ```
 
-`if-present` means evidence with `ED` clear can pass the pre-iOS-27
-compatibility path, while encoded extensions are strictly enforced. `required`
-means missing extensions fail. There is no `ignore` mode.
+`if-present` means evidence with no encoded extension map can pass the
+compatibility path, while any encoded extensions are strictly enforced.
+`required` means a decoded extension map must be present. There is no `ignore`
+mode.
 
 The host must also configure allowed categories and bundle-version policy for
 every production application. A reasonable TestFlight/App Store policy is

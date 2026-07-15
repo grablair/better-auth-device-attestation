@@ -1,0 +1,253 @@
+import { generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import { readFile } from "node:fs/promises";
+
+import cbor from "cbor";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { appAttest } from "./provider.js";
+import type { StoredAttestationCredential } from "../types.js";
+import { sha256 } from "../protocol/crypto.js";
+
+const APP_ID = "1234567890.com.example.myapp";
+const KEY_ID = Buffer.from(
+  "zgSY9YSD+7TaDXssY6WlOPVS1K3Lmk+pFhlcSWE+ZV0=",
+  "base64",
+);
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("App Attest provider", () => {
+  it("verifies Apple's official production attestation sample", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-21T18:13:12.153Z"));
+    const evidence = Buffer.from(
+      (
+        await readFile(
+          new URL(
+            "./fixtures/apple-attestation-object.base64",
+            import.meta.url,
+          ),
+          "utf8",
+        )
+      ).trim(),
+      "base64",
+    );
+    const onReceipt = vi.fn();
+    const provider = appAttest({
+      applications: [
+        {
+          appId: APP_ID,
+          environment: "production",
+          extensions: {
+            presence: "required",
+            allowedValidationCategories: [1],
+            validateBundleVersion: (version) => version === "1",
+          },
+        },
+      ],
+      receipt: { onReceipt, failureMode: "report" },
+    });
+
+    const result = await provider.verifyRegistration({
+      applicationId: APP_ID,
+      keyId: KEY_ID,
+      // Apple's known-answer fixture uses these exact bytes as clientDataHash.
+      clientDataHash: Buffer.from("example_server_challenge", "utf8"),
+      evidence,
+    });
+
+    expect(result).toMatchObject({
+      applicationId: APP_ID,
+      environment: "production",
+      counter: 0,
+      validationCategory: 1,
+      bundleVersion: "1",
+      extensionsPresent: true,
+    });
+    expect(Buffer.from(result.publicKey, "base64")).toHaveLength(91);
+    expect(onReceipt).toHaveBeenCalledOnce();
+  });
+
+  it("strictly decodes Apple key identifiers", () => {
+    const provider = appAttest({
+      applications: [
+        {
+          appId: APP_ID,
+          environment: "production",
+          extensions: {
+            presence: "required",
+            allowedValidationCategories: [2, 4],
+            validateBundleVersion: () => true,
+          },
+        },
+      ],
+    });
+
+    expect(provider.decodeKeyId(KEY_ID.toString("base64"))).toEqual(KEY_ID);
+    expect(() =>
+      provider.decodeKeyId(Buffer.alloc(31).toString("base64")),
+    ).toThrow(/rejected/u);
+  });
+
+  it("verifies assertions and App Store distribution metadata", async () => {
+    const fixture = await createAssertionFixture({
+      bundleVersion: "42",
+      validationCategory: 4,
+    });
+    const provider = createAssertionProvider({
+      presence: "required",
+      allowedValidationCategories: [2, 4],
+      validateBundleVersion: (version) => version === "42",
+    });
+
+    await expect(provider.verifyAssertion(fixture.input)).resolves.toEqual({
+      counter: 1,
+      validationCategory: 4,
+      bundleVersion: "42",
+      extensionsPresent: true,
+    });
+  });
+
+  it.each([
+    {
+      name: "disallowed category",
+      extensions: { bundleVersion: "42", validationCategory: 5 },
+      policy: {
+        presence: "required" as const,
+        allowedValidationCategories: [2, 4],
+        validateBundleVersion: () => true,
+      },
+      reason: "validation_category_disallowed",
+    },
+    {
+      name: "missing metadata",
+      extensions: undefined,
+      policy: {
+        presence: "required" as const,
+        allowedValidationCategories: [2, 4],
+        validateBundleVersion: () => true,
+      },
+      reason: "extensions_required",
+    },
+    {
+      name: "bundle version mismatch",
+      extensions: { bundleVersion: "41", validationCategory: 4 },
+      policy: {
+        presence: "required" as const,
+        allowedValidationCategories: [2, 4],
+        validateBundleVersion: (version: string) => version === "42",
+      },
+      reason: "bundle_version_disallowed",
+    },
+  ])("rejects $name", async ({ extensions, policy, reason }) => {
+    const fixture = await createAssertionFixture(extensions);
+    const provider = createAssertionProvider(policy);
+
+    await expectFailureReasonAsync(
+      () => provider.verifyAssertion(fixture.input),
+      reason,
+    );
+  });
+});
+
+function createAssertionProvider(extensions: {
+  presence: "if-present" | "required";
+  allowedValidationCategories: readonly number[];
+  validateBundleVersion: (version: string) => boolean | Promise<boolean>;
+}) {
+  return appAttest({
+    applications: [
+      {
+        appId: APP_ID,
+        environment: "production",
+        extensions,
+      },
+    ],
+  });
+}
+
+async function createAssertionFixture(
+  extensions: { bundleVersion: string; validationCategory: number } | undefined,
+) {
+  const { privateKey, publicKey } = generateKeyPairSync("ec", {
+    namedCurve: "prime256v1",
+  });
+  const clientDataHash = sha256(Buffer.from("assertion-client-data", "utf8"));
+  const authenticatorData = Buffer.concat([
+    sha256(Buffer.from(APP_ID, "utf8")),
+    Buffer.from([0]),
+    Buffer.from([0, 0, 0, 1]),
+    ...(extensions === undefined
+      ? []
+      : [
+          await cbor.encodeAsync({
+            apple_bundle_version_01: extensions.bundleVersion,
+            apple_validation_category_01: categoryBytes(
+              extensions.validationCategory,
+            ),
+          }),
+        ]),
+  ]);
+  const nonce = sha256(Buffer.concat([authenticatorData, clientDataHash]));
+  const signature = sign("sha256", nonce, {
+    key: privateKey,
+    dsaEncoding: "der",
+  });
+  const evidence = await cbor.encodeAsync({
+    signature,
+    authenticatorData,
+  });
+  const keyId = keyIdentifier(publicKey);
+  const credential: StoredAttestationCredential = {
+    id: "credential-1",
+    lookupKey: "lookup",
+    provider: "app-attest",
+    applicationId: APP_ID,
+    environment: "production",
+    publicKey: publicKey
+      .export({ format: "der", type: "spki" })
+      .toString("base64"),
+    counter: 0,
+    bindingVersion: 1,
+    status: "active",
+    extensionsPresent: false,
+  };
+  return {
+    input: { credential, keyId, clientDataHash, evidence },
+  };
+}
+
+function keyIdentifier(publicKey: KeyObject): Buffer {
+  const jwk = publicKey.export({ format: "jwk" });
+  if (!jwk.x || !jwk.y) {
+    throw new TypeError("Generated EC key has no coordinates.");
+  }
+  return sha256(
+    Buffer.concat([
+      Buffer.from([0x04]),
+      Buffer.from(jwk.x, "base64url"),
+      Buffer.from(jwk.y, "base64url"),
+    ]),
+  );
+}
+
+function categoryBytes(category: number): Buffer {
+  const bytes = Buffer.alloc(4);
+  bytes.writeUInt32LE(category);
+  return bytes;
+}
+
+async function expectFailureReasonAsync(
+  operation: () => Promise<unknown>,
+  reason: string,
+): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    expect(error).toMatchObject({ reason });
+    return;
+  }
+  expect.fail("Expected attestation verification to fail.");
+}
