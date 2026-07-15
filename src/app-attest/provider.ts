@@ -3,6 +3,7 @@ import { createPublicKey, verify as verifySignature } from "node:crypto";
 import { decodeSingleCbor } from "../cbor/decode.js";
 import { decodeBase64Strict } from "../encoding/base64.js";
 import { rejection } from "../errors.js";
+import { MAX_APPLICATION_ID_LENGTH } from "../limits.js";
 import { equalBytes, sha256 } from "../protocol/crypto.js";
 import type {
   AssertionVerificationResult,
@@ -340,9 +341,13 @@ function validateApplications(
   }
   const applications = new Map<string, AppAttestApplication>();
   for (const application of input) {
-    if (!application.appId || applications.has(application.appId)) {
+    if (
+      !application.appId ||
+      application.appId.length > MAX_APPLICATION_ID_LENGTH ||
+      applications.has(application.appId)
+    ) {
       throw new TypeError(
-        "App Attest application IDs must be non-empty and unique.",
+        `App Attest application IDs must be non-empty, unique, and at most ${MAX_APPLICATION_ID_LENGTH} characters.`,
       );
     }
     if (

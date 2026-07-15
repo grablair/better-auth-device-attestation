@@ -6,7 +6,6 @@ import {
   createAuthEndpoint,
   sensitiveSessionMiddleware,
 } from "better-auth/api";
-import { z } from "zod";
 
 import {
   decodeBase64Strict,
@@ -19,94 +18,51 @@ import {
   rejection,
 } from "./errors.js";
 import {
-  createClientData,
-  hashOAuthBinding,
-  normalizeOAuthBinding,
-} from "./protocol/binding.js";
+  advanceCounter,
+  CREDENTIAL_MODEL,
+  enforceUnboundCredentialQuota,
+  maintainUnboundCredentials,
+  normalizeCredentialIntegers,
+  registerCredential,
+  requireUsableCredential,
+  retireCredentialsForUser,
+  type RuntimeContext,
+} from "./credential-store.js";
+import {
+  reportDiagnostic,
+  toPublicApiError,
+  withPublicError,
+} from "./diagnostics.js";
+import {
+  consumeAndBindGrant,
+  grantIdentifier,
+  isProtectedClient,
+} from "./oauth-grant.js";
+import { resolveDeviceAttestationOptions } from "./plugin-options.js";
+import {
+  challengeBodySchema,
+  challengeStateSchema,
+  retireBodySchema,
+  verifyBodySchema,
+} from "./plugin-schemas.js";
+import { createClientData, hashOAuthBinding } from "./protocol/binding.js";
 import {
   credentialLookupKey,
-  equalBytes,
   hmacSha256,
   randomToken,
   sha256,
 } from "./protocol/crypto.js";
 import { deviceAttestationSchema } from "./schema.js";
 import type {
-  AssertionVerificationResult,
   DeviceAttestationComposition,
   DeviceAttestationOptions,
   DeviceAttestationProvider,
-  OAuthAuthorizationBinding,
   OAuthProviderCompositionOptions,
   OAuthProviderTokenContext,
-  RegistrationVerificationResult,
   StoredAttestationCredential,
 } from "./types.js";
 
 const PLUGIN_VERSION = "0.1.0-alpha.0";
-const CREDENTIAL_MODEL = "deviceAttestationCredential";
-const UINT32_MAX = 0xffff_ffff;
-
-const oauthBindingSchema = z.object({
-  clientId: z.string().min(1).max(256),
-  redirectUri: z.string().min(1).max(2048),
-  codeChallenge: z.string().min(1).max(256),
-  codeChallengeMethod: z.literal("S256"),
-  dpopJkt: z.string().min(1).max(256),
-  scope: z.string().min(1).max(2048),
-  resources: z.array(z.string().min(1).max(2048)).max(16).optional(),
-  nonce: z.string().max(512).optional(),
-});
-
-const challengeBodySchema = z.discriminatedUnion("operation", [
-  z.object({
-    provider: z.string().min(1).max(64),
-    applicationId: z.string().min(1).max(512),
-    operation: z.literal("register"),
-    keyId: z.string().min(1).max(1024),
-    purpose: z.literal("credential-registration"),
-  }),
-  z.object({
-    provider: z.string().min(1).max(64),
-    applicationId: z.string().min(1).max(512),
-    operation: z.literal("assert"),
-    keyId: z.string().min(1).max(1024),
-    purpose: z.literal("oauth-authorization"),
-    binding: oauthBindingSchema,
-  }),
-]);
-
-const verifyBodySchema = z.object({
-  challengeToken: z.string().min(1).max(128),
-  keyId: z.string().min(1).max(1024),
-  evidence: z.string().min(1),
-});
-
-const retireBodySchema = z.object({
-  credentialId: z.string().min(1).max(512),
-});
-
-const challengeStateSchema = z.object({
-  version: z.literal(1),
-  provider: z.string(),
-  applicationId: z.string(),
-  operation: z.enum(["register", "assert"]),
-  purpose: z.enum(["credential-registration", "oauth-authorization"]),
-  credentialLookupKey: z.string(),
-  clientDataHash: z.string(),
-  bindingHash: z.string().optional(),
-});
-
-const grantStateSchema = z.object({
-  version: z.literal(1),
-  provider: z.string(),
-  applicationId: z.string(),
-  credentialId: z.string(),
-  bindingHash: z.string(),
-  counterExhausted: z.boolean(),
-});
-
-type RuntimeContext = Parameters<NonNullable<BetterAuthPlugin["init"]>>[0];
 
 /**
  * Create a stateful Better Auth device-attestation composition.
@@ -121,67 +77,9 @@ type RuntimeContext = Parameters<NonNullable<BetterAuthPlugin["init"]>>[0];
  * the same composition initializes more than once.
  */
 export function createDeviceAttestation(options: DeviceAttestationOptions) {
-  const providers = new Map<string, DeviceAttestationProvider>();
-  for (const provider of options.providers) {
-    if (providers.has(provider.id)) {
-      throw new TypeError(
-        `Duplicate device attestation provider: ${provider.id}`,
-      );
-    }
-    providers.set(provider.id, provider);
-  }
-  if (providers.size === 0) {
-    throw new TypeError(
-      "At least one device attestation provider is required.",
-    );
-  }
+  const resolved = resolveDeviceAttestationOptions(options);
+  const { providers } = resolved;
   const oauthPurpose = options.purposes.oauthAuthorization;
-  const registrationPurpose = options.purposes.credentialRegistration;
-  if (
-    oauthPurpose.requireDpopJkt !== true ||
-    oauthPurpose.protectedClientIds.length === 0 ||
-    oauthPurpose.protectedClientIds.some((clientId) => clientId.length === 0)
-  ) {
-    throw new TypeError(
-      "OAuth authorization requires DPoP and at least one non-empty protected client ID.",
-    );
-  }
-  if (
-    new Set(oauthPurpose.protectedClientIds).size !==
-    oauthPurpose.protectedClientIds.length
-  ) {
-    throw new TypeError("protectedClientIds must not contain duplicates.");
-  }
-
-  const challengeTtlSeconds = positiveSeconds(
-    oauthPurpose.challengeTtlSeconds,
-    120,
-    "purposes.oauthAuthorization.challengeTtlSeconds",
-  );
-  const registrationChallengeTtlSeconds = positiveSeconds(
-    registrationPurpose.challengeTtlSeconds,
-    120,
-    "purposes.credentialRegistration.challengeTtlSeconds",
-  );
-  const grantTtlSeconds = positiveSeconds(
-    oauthPurpose.grantTtlSeconds,
-    300,
-    "purposes.oauthAuthorization.grantTtlSeconds",
-  );
-  const unboundCredentialTtlSeconds = positiveSeconds(
-    registrationPurpose.unboundCredentialTtlSeconds,
-    24 * 60 * 60,
-    "purposes.credentialRegistration.unboundCredentialTtlSeconds",
-  );
-  const expiredCredentialRetentionSeconds = positiveSeconds(
-    registrationPurpose.expiredCredentialRetentionSeconds,
-    7 * 24 * 60 * 60,
-    "purposes.credentialRegistration.expiredCredentialRetentionSeconds",
-  );
-  const maxActiveUnboundCredentialsPerApplication = optionalPositiveInteger(
-    registrationPurpose.maxActiveUnboundCredentialsPerApplication,
-    "purposes.credentialRegistration.maxActiveUnboundCredentialsPerApplication",
-  );
 
   let runtime: RuntimeContext | undefined;
 
@@ -272,7 +170,7 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
                   ctx.context,
                   provider.id,
                   ctx.body.applicationId,
-                  expiredCredentialRetentionSeconds,
+                  resolved.expiredCredentialRetentionSeconds,
                 );
               }
 
@@ -292,8 +190,8 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
               const token = randomToken();
               const challengeTtl =
                 ctx.body.operation === "register"
-                  ? registrationChallengeTtlSeconds
-                  : challengeTtlSeconds;
+                  ? resolved.registrationChallengeTtlSeconds
+                  : resolved.challengeTtlSeconds;
               const expiresAt = new Date(Date.now() + challengeTtl * 1000);
               const state = {
                 version: 1,
@@ -362,11 +260,7 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
                 });
               }
 
-              const state = parseStoredState(
-                challengeStateSchema,
-                verification.value,
-                "invalid_challenge_state",
-              );
+              const state = parseChallengeState(verification.value);
               providerId = state.provider;
               operation = state.operation;
               const provider = requireProvider(providers, state.provider);
@@ -394,7 +288,7 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
                   ctx.context,
                   provider.id,
                   state.applicationId,
-                  maxActiveUnboundCredentialsPerApplication,
+                  resolved.maxActiveUnboundCredentialsPerApplication,
                 );
                 const result = await provider.verifyRegistration({
                   applicationId: state.applicationId,
@@ -408,7 +302,7 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
                   lookupKey,
                   state.applicationId,
                   result,
-                  unboundCredentialTtlSeconds,
+                  resolved.unboundCredentialTtlSeconds,
                 );
                 return ctx.json({
                   credentialId: credential.id,
@@ -423,7 +317,7 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
                 });
               requireUsableCredential(credential);
               const normalizedCredential =
-                normalizeCredentialCounter(credential);
+                normalizeCredentialIntegers(credential);
               const result = await provider.verifyAssertion({
                 credential: normalizedCredential,
                 keyId,
@@ -436,7 +330,9 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
                 result,
               );
               const grantToken = randomToken();
-              const expiresAt = new Date(Date.now() + grantTtlSeconds * 1000);
+              const expiresAt = new Date(
+                Date.now() + resolved.grantTtlSeconds * 1000,
+              );
               const grant = {
                 version: 1,
                 provider: provider.id,
@@ -572,368 +468,8 @@ export function createDeviceAttestation(options: DeviceAttestationOptions) {
   } satisfies DeviceAttestationComposition;
 }
 
-async function registerCredential(
-  context: RuntimeContext,
-  provider: DeviceAttestationProvider,
-  lookupKey: string,
-  expectedApplicationId: string,
-  result: RegistrationVerificationResult,
-  unboundCredentialTtlSeconds: number,
-): Promise<StoredAttestationCredential> {
-  if (result.applicationId !== expectedApplicationId || result.counter !== 0) {
-    throw rejection("app-identity", "invalid_registration_result");
-  }
-  const existing = await context.adapter.findOne<StoredAttestationCredential>({
-    model: CREDENTIAL_MODEL,
-    where: [{ field: "lookupKey", value: lookupKey }],
-  });
-  if (existing) {
-    throw new DeviceAttestationError({
-      code: "DEVICE_ATTESTATION_CREDENTIAL_REQUIRED",
-      stage: "credential-binding",
-      reason: "credential_already_registered",
-    });
-  }
-
-  return context.adapter.create<StoredAttestationCredential>({
-    model: CREDENTIAL_MODEL,
-    data: {
-      lookupKey,
-      provider: provider.id,
-      applicationId: result.applicationId,
-      environment: result.environment,
-      publicKey: result.publicKey,
-      counter: 0,
-      userId: null,
-      bindingVersion: 0,
-      status: "active",
-      extensionsPresent: result.extensionsPresent,
-      unboundExpiresAt: new Date(
-        Date.now() + unboundCredentialTtlSeconds * 1000,
-      ),
-      ...(result.validationCategory === undefined
-        ? {}
-        : { validationCategory: result.validationCategory }),
-      ...(result.bundleVersion === undefined
-        ? {}
-        : { bundleVersion: result.bundleVersion }),
-    },
-  });
-}
-
-async function advanceCounter(
-  context: RuntimeContext,
-  credential: StoredAttestationCredential,
-  result: AssertionVerificationResult,
-): Promise<StoredAttestationCredential> {
-  if (
-    !Number.isSafeInteger(result.counter) ||
-    result.counter <= credential.counter ||
-    result.counter > UINT32_MAX
-  ) {
-    throw rejection("counter", "invalid_assertion_counter");
-  }
-
-  const exhausted = result.counter === UINT32_MAX;
-  const updated =
-    await context.adapter.incrementOne<StoredAttestationCredential>({
-      model: CREDENTIAL_MODEL,
-      where: [
-        { field: "id", value: credential.id },
-        { field: "counter", value: credential.counter },
-        { field: "status", value: "active" },
-      ],
-      increment: { counter: result.counter - credential.counter },
-      set: {
-        lastUsedAt: new Date(),
-        extensionsPresent: result.extensionsPresent,
-        validationCategory: result.validationCategory ?? null,
-        bundleVersion: result.bundleVersion ?? null,
-        ...(exhausted
-          ? {
-              status: "revoked",
-              revokedAt: new Date(),
-              revocationReason: "counter_exhausted",
-            }
-          : {}),
-      },
-    });
-  if (!updated) {
-    throw rejection("counter", "assertion_counter_race");
-  }
-  return updated;
-}
-
-async function retireCredentialsForUser(
-  context: RuntimeContext,
-  userId: string,
-): Promise<void> {
-  await context.adapter.updateMany({
-    model: CREDENTIAL_MODEL,
-    where: [
-      { field: "userId", value: userId },
-      { field: "status", value: "active" },
-    ],
-    update: {
-      status: "revoked",
-      revokedAt: new Date(),
-      revocationReason: "user_deleted",
-      publicKey: null,
-      validationCategory: null,
-      bundleVersion: null,
-      unboundExpiresAt: null,
-    },
-  });
-}
-
-async function maintainUnboundCredentials(
-  context: RuntimeContext,
-  provider: string,
-  applicationId: string,
-  retentionSeconds: number,
-): Promise<void> {
-  const now = new Date();
-  await context.adapter.updateMany({
-    model: CREDENTIAL_MODEL,
-    where: [
-      { field: "provider", value: provider },
-      { field: "applicationId", value: applicationId },
-      { field: "status", value: "active" },
-      { field: "userId", value: null },
-      { field: "unboundExpiresAt", value: now, operator: "lt" },
-    ],
-    update: {
-      status: "expired",
-      publicKey: null,
-      validationCategory: null,
-      bundleVersion: null,
-      updatedAt: now,
-    },
-  });
-  await context.adapter.deleteMany({
-    model: CREDENTIAL_MODEL,
-    where: [
-      { field: "provider", value: provider },
-      { field: "applicationId", value: applicationId },
-      { field: "status", value: "expired" },
-      { field: "userId", value: null },
-      {
-        field: "updatedAt",
-        value: new Date(now.getTime() - retentionSeconds * 1000),
-        operator: "lt",
-      },
-    ],
-  });
-}
-
-async function enforceUnboundCredentialQuota(
-  context: RuntimeContext,
-  provider: string,
-  applicationId: string,
-  maximum: number | undefined,
-): Promise<void> {
-  if (maximum === undefined) {
-    return;
-  }
-  const count = await context.adapter.count({
-    model: CREDENTIAL_MODEL,
-    where: [
-      { field: "provider", value: provider },
-      { field: "applicationId", value: applicationId },
-      { field: "status", value: "active" },
-      { field: "userId", value: null },
-    ],
-  });
-  if (count >= maximum) {
-    throw new DeviceAttestationError({
-      code: "DEVICE_ATTESTATION_RETRY",
-      stage: "storage",
-      reason: "unbound_credential_quota_reached",
-      retryable: true,
-    });
-  }
-}
-
-async function consumeAndBindGrant(
-  runtime: RuntimeContext,
-  info: OAuthProviderTokenContext,
-): Promise<void> {
-  const query = info.verificationValue?.query;
-  const grantToken = readQueryString(query, "device_attestation");
-  const userId = info.user?.id;
-  if (!grantToken || !userId) {
-    throw new DeviceAttestationError({
-      code: "DEVICE_ATTESTATION_GRANT_REQUIRED",
-      stage: "grant-binding",
-      reason: "missing_grant_or_user",
-    });
-  }
-
-  decodeBase64UrlStrict(grantToken, {
-    label: "grant_token",
-    maxBytes: 32,
-    exactBytes: 32,
-  });
-  const verification = await runtime.internalAdapter.consumeVerificationValue(
-    grantIdentifier(runtime.secret, grantToken),
-  );
-  if (!verification) {
-    throw new DeviceAttestationError({
-      code: "DEVICE_ATTESTATION_GRANT_REQUIRED",
-      stage: "grant-binding",
-      reason: "grant_unavailable",
-    });
-  }
-  const grant = parseStoredState(
-    grantStateSchema,
-    verification.value,
-    "invalid_grant_state",
-  );
-  const binding = oauthBindingFromQuery(query);
-  const actualBindingHash = hashOAuthBinding(binding);
-  if (
-    !equalBytes(actualBindingHash, Buffer.from(grant.bindingHash, "base64url"))
-  ) {
-    throw rejection("grant-binding", "oauth_binding_mismatch");
-  }
-
-  const credential = await runtime.adapter.findOne<StoredAttestationCredential>(
-    {
-      model: CREDENTIAL_MODEL,
-      where: [{ field: "id", value: grant.credentialId }],
-    },
-  );
-  const exhaustedCredential =
-    grant.counterExhausted &&
-    credential?.status === "revoked" &&
-    credential.revocationReason === "counter_exhausted";
-  if (!exhaustedCredential) {
-    requireUsableCredential(credential);
-  }
-  if (!credential) {
-    throw rejection("credential-binding", "credential_not_found");
-  }
-  if (
-    credential.provider !== grant.provider ||
-    credential.applicationId !== grant.applicationId
-  ) {
-    throw rejection("grant-binding", "grant_credential_mismatch");
-  }
-  if (credential.userId === userId) {
-    return;
-  }
-  if (credential.userId) {
-    throw rejection("credential-binding", "credential_user_mismatch");
-  }
-  if (
-    !credential.unboundExpiresAt ||
-    credential.unboundExpiresAt.getTime() <= Date.now()
-  ) {
-    throw rejection("credential-binding", "unbound_credential_expired");
-  }
-
-  const bound = await runtime.adapter.incrementOne<StoredAttestationCredential>(
-    {
-      model: CREDENTIAL_MODEL,
-      where: [
-        { field: "id", value: credential.id },
-        { field: "bindingVersion", value: 0 },
-        { field: "userId", value: null },
-        {
-          field: "status",
-          value: exhaustedCredential ? "revoked" : "active",
-        },
-      ],
-      increment: { bindingVersion: 1 },
-      set: {
-        userId,
-        boundAt: new Date(),
-        unboundExpiresAt: null,
-      },
-    },
-  );
-  if (!bound) {
-    const raced = await runtime.adapter.findOne<StoredAttestationCredential>({
-      model: CREDENTIAL_MODEL,
-      where: [{ field: "id", value: credential.id }],
-    });
-    if (raced?.userId !== userId || raced.status !== "active") {
-      throw rejection("credential-binding", "credential_binding_race");
-    }
-  }
-}
-
-function oauthBindingFromQuery(
-  query: object | undefined,
-): OAuthAuthorizationBinding {
-  const resource = readQueryValue(query, "resource");
-  const resources = Array.isArray(resource)
-    ? resource.filter((value): value is string => typeof value === "string")
-    : typeof resource === "string"
-      ? [resource]
-      : undefined;
-  return normalizeOAuthBinding({
-    clientId: requireQueryString(query, "client_id"),
-    redirectUri: requireQueryString(query, "redirect_uri"),
-    codeChallenge: requireQueryString(query, "code_challenge"),
-    codeChallengeMethod: requireQueryString(
-      query,
-      "code_challenge_method",
-    ) as "S256",
-    dpopJkt: requireQueryString(query, "dpop_jkt"),
-    scope: requireQueryString(query, "scope"),
-    ...(resources === undefined ? {} : { resources }),
-    ...(typeof readQueryValue(query, "nonce") === "string"
-      ? { nonce: readQueryValue(query, "nonce") as string }
-      : {}),
-  });
-}
-
-function requireUsableCredential(
-  credential: StoredAttestationCredential | null,
-): asserts credential is StoredAttestationCredential {
-  if (!credential || credential.status !== "active" || !credential.publicKey) {
-    throw new DeviceAttestationError({
-      code: "DEVICE_ATTESTATION_CREDENTIAL_REQUIRED",
-      stage: "credential-binding",
-      reason: "credential_not_active",
-    });
-  }
-  if (
-    !credential.userId &&
-    (!credential.unboundExpiresAt ||
-      credential.unboundExpiresAt.getTime() <= Date.now())
-  ) {
-    throw new DeviceAttestationError({
-      code: "DEVICE_ATTESTATION_CREDENTIAL_REQUIRED",
-      stage: "credential-binding",
-      reason: "unbound_credential_expired",
-    });
-  }
-}
-
-function normalizeCredentialCounter(
-  credential: StoredAttestationCredential,
-): StoredAttestationCredential {
-  const value: unknown = credential.counter;
-  const counter =
-    typeof value === "number"
-      ? value
-      : typeof value === "string" && /^(0|[1-9][0-9]*)$/u.test(value)
-        ? Number(value)
-        : Number.NaN;
-  if (!Number.isSafeInteger(counter) || counter < 0 || counter > UINT32_MAX) {
-    throw rejection("storage", "invalid_stored_counter");
-  }
-  return counter === value ? credential : { ...credential, counter };
-}
-
 function challengeIdentifier(secret: string, token: string): string {
   return `device-attestation:challenge:${hmacSha256(secret, token)}`;
-}
-
-function grantIdentifier(secret: string, token: string): string {
-  return `device-attestation:grant:${hmacSha256(secret, token)}`;
 }
 
 function requiredBindingHash(state: {
@@ -960,138 +496,12 @@ function requireProvider(
   return provider;
 }
 
-function parseStoredState<T extends z.ZodType>(
-  schema: T,
-  value: string,
-  reason: string,
-): z.output<T> {
+function parseChallengeState(value: string) {
   try {
-    return schema.parse(JSON.parse(value) as unknown);
+    return challengeStateSchema.parse(JSON.parse(value) as unknown);
   } catch {
-    throw rejection("storage", reason);
+    throw rejection("storage", "invalid_challenge_state");
   }
-}
-
-async function withPublicError<T>(
-  options: DeviceAttestationOptions,
-  context: () => {
-    provider: string;
-    operation: "challenge" | "verify" | "register" | "assert" | "grant";
-  },
-  action: () => Promise<T>,
-): Promise<T> {
-  try {
-    return await action();
-  } catch (error) {
-    const { provider, operation } = context();
-    await reportDiagnostic(options, error, provider, operation);
-    throw toPublicApiError(error);
-  }
-}
-
-async function reportDiagnostic(
-  options: DeviceAttestationOptions,
-  error: unknown,
-  provider: string,
-  operation: "challenge" | "verify" | "register" | "assert" | "grant",
-): Promise<void> {
-  const report = options.diagnostics?.report;
-  if (!report) {
-    return;
-  }
-  const failure =
-    error instanceof DeviceAttestationError
-      ? error
-      : new DeviceAttestationError({
-          code: "DEVICE_ATTESTATION_RETRY",
-          stage: "unexpected",
-          reason: "unexpected_failure",
-          retryable: true,
-        });
-  try {
-    await report({
-      provider,
-      operation,
-      stage: failure.stage,
-      reason: failure.reason,
-      retryable: failure.retryable,
-      ...(failure.measurements === undefined
-        ? {}
-        : { measurements: failure.measurements }),
-    });
-  } catch {
-    // Diagnostic delivery must not replace the original authentication result.
-  }
-}
-
-function toPublicApiError(error: unknown): APIError {
-  const failure =
-    error instanceof DeviceAttestationError
-      ? error
-      : new DeviceAttestationError({
-          code: "DEVICE_ATTESTATION_RETRY",
-          stage: "unexpected",
-          reason: "unexpected_failure",
-          retryable: true,
-        });
-  const status = failure.retryable ? "SERVICE_UNAVAILABLE" : "FORBIDDEN";
-  return new APIError(status, {
-    code: failure.code,
-    message: deviceAttestationErrorMessage(failure.code),
-  });
-}
-
-function positiveSeconds(
-  value: number | undefined,
-  fallback: number,
-  label: string,
-): number {
-  const resolved = value ?? fallback;
-  if (!Number.isSafeInteger(resolved) || resolved <= 0) {
-    throw new TypeError(`${label} must be a positive safe integer.`);
-  }
-  return resolved;
-}
-
-function optionalPositiveInteger(
-  value: number | undefined,
-  label: string,
-): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new TypeError(`${label} must be a positive safe integer.`);
-  }
-  return value;
-}
-
-function isProtectedClient(
-  info: OAuthProviderTokenContext,
-  protectedClientIds: string[],
-): boolean {
-  const clientId = readQueryString(info.verificationValue?.query, "client_id");
-  return clientId !== undefined && protectedClientIds.includes(clientId);
-}
-
-function readQueryString(
-  query: object | undefined,
-  key: string,
-): string | undefined {
-  const value = readQueryValue(query, key);
-  return typeof value === "string" ? value : undefined;
-}
-
-function readQueryValue(query: object | undefined, key: string): unknown {
-  return query === undefined ? undefined : Reflect.get(query, key);
-}
-
-function requireQueryString(query: object | undefined, key: string): string {
-  const value = readQueryString(query, key);
-  if (!value) {
-    throw rejection("grant-binding", `missing_${key}`);
-  }
-  return value;
 }
 
 function requireRuntime(runtime: RuntimeContext | undefined): RuntimeContext {

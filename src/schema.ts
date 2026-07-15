@@ -44,6 +44,7 @@ export const deviceAttestationSchema = {
         type: "string",
         required: false,
         input: false,
+        returned: false,
         references: {
           model: "user",
           field: "id",
@@ -66,6 +67,7 @@ export const deviceAttestationSchema = {
       },
       validationCategory: {
         type: "number",
+        bigint: true,
         required: false,
         input: false,
         returned: false,

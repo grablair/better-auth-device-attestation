@@ -17,6 +17,7 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const APP_ID = "TEAMID.com.example.postgres";
 const KEY_ID = Buffer.alloc(32, 0x71);
 const PUBLIC_KEY = Buffer.alloc(91, 0x72).toString("base64");
+const UINT32_MAX = 0xffff_ffff;
 
 describe.skipIf(!DATABASE_URL)("PostgreSQL adapter contract", () => {
   it("atomically consumes challenges and grants and guards a UInt32 counter", async () => {
@@ -111,6 +112,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL adapter contract", () => {
           "Expected PostgreSQL registration to persist a credential.",
         );
       }
+      expect(Number(credential.validationCategory)).toBe(UINT32_MAX);
       await context.adapter.update({
         model: "deviceAttestationCredential",
         where: [{ field: "id", value: credential.id }],
@@ -227,13 +229,16 @@ function mockProvider(
         publicKey: PUBLIC_KEY,
         counter: 0,
         extensionsPresent: true,
+        validationCategory: UINT32_MAX,
       });
     },
     async verifyAssertion(input) {
       await assertionBarrier();
+      expect(input.credential.validationCategory).toBe(UINT32_MAX);
       return {
         counter: input.credential.counter + 1,
         extensionsPresent: true,
+        validationCategory: UINT32_MAX,
       };
     },
   };

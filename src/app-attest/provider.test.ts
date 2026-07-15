@@ -19,6 +19,24 @@ afterEach(() => {
 });
 
 describe("App Attest provider", () => {
+  it("rejects application IDs beyond the portable schema bound", () => {
+    expect(() =>
+      appAttest({
+        applications: [
+          {
+            appId: "a".repeat(256),
+            environment: "production",
+            extensions: {
+              presence: "required",
+              allowedValidationCategories: [2, 4],
+              validateBundleVersion: () => true,
+            },
+          },
+        ],
+      }),
+    ).toThrow(/at most 255 characters/u);
+  });
+
   it("verifies Apple's official production attestation sample", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-21T18:13:12.153Z"));

@@ -238,6 +238,30 @@ describe("device attestation lifecycle and concurrency", () => {
     );
   });
 
+  it("rejects a malformed validation category returned by a database adapter", async () => {
+    const harness = await createHarness();
+    await harness.register();
+    const credential = await harness.credential();
+    if (!credential) {
+      expect.fail("Expected a registered credential.");
+    }
+    await harness.context.adapter.update({
+      model: "deviceAttestationCredential",
+      where: [{ field: "id", value: credential.id }],
+      update: { validationCategory: "1e2" },
+    });
+
+    await expect(harness.assert()).rejects.toMatchObject({
+      status: "FORBIDDEN",
+    });
+    expect(harness.diagnostics).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: "storage",
+        reason: "invalid_stored_validation_category",
+      }),
+    );
+  });
+
   it("preserves host token fields for unprotected and refresh grants", async () => {
     const hostCallback = vi.fn().mockResolvedValue({ host: "field" });
     const harness = await createHarness({ hostCallback });

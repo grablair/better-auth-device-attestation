@@ -1,6 +1,13 @@
 /**
- * Apple App Attestation Root CA published at
- * https://www.apple.com/certificateauthority/private/
+ * Apple App Attestation Root CA.
+ *
+ * Source: https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem
+ * Verified: 2026-07-14
+ * SHA-256: 1C:B9:82:3B:A2:8B:A6:AD:2D:33:A0:06:94:1D:E2:AE:
+ *   4F:51:3E:F1:D4:E8:31:B9:F7:E0:FA:7B:62:42:C9:32
+ *
+ * Keep this trust anchor bundled and pinned. Do not replace it with a runtime
+ * download or a host-provided certificate without an explicit trust transition.
  */
 export const APPLE_APP_ATTESTATION_ROOT_CA_PEM = `-----BEGIN CERTIFICATE-----
 MIICITCCAaegAwIBAgIQC/O+DvHN0uD7jG5yH2IXmDAKBggqhkjOPQQDAzBSMSYw

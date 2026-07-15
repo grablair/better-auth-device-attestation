@@ -137,8 +137,10 @@ npx auth@rc generate
 
 Review and apply the generated migration using the workflow for your adapter.
 The schema stores a hashed credential lookup key, SPKI public key while active,
-the full unsigned 32-bit assertion counter, user binding, lifecycle status, and
-the last accepted distribution metadata. Raw App Attest evidence, receipts,
+the full unsigned 32-bit assertion counter and validation category, user
+binding, lifecycle status, and the last accepted distribution metadata. Provider
+application identities are limited to 255 characters so indexed schema output
+remains portable across supported adapters. Raw App Attest evidence, receipts,
 challenges, key identifiers, DPoP proofs, and OAuth credentials are not stored
 in this model.
 
