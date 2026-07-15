@@ -62,7 +62,7 @@
     "package:smoke": "node scripts/package-smoke.mjs",
     "test": "vitest run --passWithNoTests",
     "test:coverage": "vitest run --coverage --passWithNoTests",
-    "test:postgres": "vitest run src/postgres.integration.test.ts",
+    "test:postgres": "vitest run --config vitest.config.postgres.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "peerDependencies": {
@@ -83,6 +83,7 @@
     "@vitest/coverage-v8": "4.1.10",
     "better-auth": "1.7.0-rc.1",
     "eslint": "^9.39.2",
+    "kysely": "0.28.17",
     "pg": "^8.22.0",
     "prettier": "^3.8.1",
     "publint": "^0.3.21",

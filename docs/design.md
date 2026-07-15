@@ -1185,11 +1185,12 @@ signals into one trust score.
 The current alpha automates the official Apple production vector, synthetic
 production and development registration vectors, distribution-extension
 regressions, mutated verifier inputs, deterministic malformed-CBOR sampling,
-memory-adapter lifecycle and concurrency checks, a PostgreSQL atomicity and
-UInt32 lane, inferred-client type checks, enforced coverage thresholds, and
-packed ESM/declaration validation. Sanitized real-device vectors, the remaining
-adapter matrix, and end-to-end OAuth token issuance remain stable-release
-criteria rather than completed alpha coverage.
+memory-adapter lifecycle and concurrency checks, a shared Better Auth
+`getTestInstance()` contract against SQLite/Kysely and PostgreSQL/Kysely,
+inferred-client type checks, enforced coverage thresholds, and packed
+ESM/declaration validation. Sanitized real-device vectors, the remaining adapter
+matrix, and end-to-end OAuth token issuance remain stable-release criteria
+rather than completed alpha coverage.
 
 ### Parser and verifier tests
 

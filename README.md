@@ -274,12 +274,18 @@ revocation workflow until Better Auth exposes a documented association hook.
 ```sh
 pnpm check
 pnpm test:coverage
+pnpm test:postgres
 pnpm package:check
 ```
 
-PostgreSQL contract tests run separately when `DATABASE_URL` is set. CI runs the
-ordinary suite on Node.js 20, 22, and 24 and the PostgreSQL lane on its declared
-runtime.
+Plugin integration tests use Better Auth's published `getTestInstance()` helper.
+The ordinary suite runs the shared adapter contract against its default
+in-memory SQLite database on Node.js 22.5 and newer; Node.js 20 continues to run
+the runtime-compatible parser, provider, lifecycle, type, and package suites.
+The PostgreSQL CI lane runs the same adapter contract against Better Auth's
+standard PostgreSQL test service. SQLite/Kysely and PostgreSQL/Kysely are the
+currently verified database combinations; other adapters remain unverified until
+they pass the same contract.
 
 See [docs/design.md](docs/design.md) for the architecture, security invariants,
 protocol rationale, release criteria, and future Android design.

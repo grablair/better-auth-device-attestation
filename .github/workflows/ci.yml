@@ -39,16 +39,14 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: device_attestation
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
+          POSTGRES_DB: better_auth
+          POSTGRES_PASSWORD: password
+          POSTGRES_USER: user
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d device_attestation"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-    env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/device_attestation
+          --health-cmd "pg_isready -U user -d better_auth" --health-interval 5s
+          --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
