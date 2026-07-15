@@ -34,6 +34,22 @@ export interface OAuthAuthorizationBinding {
 }
 
 /**
+ * Host credential issuance values committed into an assertion challenge.
+ *
+ * `subject` is a host-defined, non-secret identifier for the issuance ceremony
+ * (for example, a hash of a pairing transaction). It must not contain the raw
+ * credential or pairing secret.
+ */
+export interface CredentialIssuanceBinding {
+  /** Host-defined namespace configured as trusted server policy. */
+  namespace: string;
+  /** Stable non-secret identifier for the exact issuance ceremony. */
+  subject: string;
+  /** RFC 7638 thumbprint of the key bound to the issued credential. */
+  dpopJkt: string;
+}
+
+/**
  * Credential record supplied to an attestation provider during assertion
  * verification.
  *
@@ -57,6 +73,8 @@ export interface StoredAttestationCredential {
   counter: number;
   /** Permanently bound Better Auth user, or null before first authorization. */
   userId?: string | null;
+  /** Whether a host credential has been issued from this attested key. */
+  externallyBound: boolean;
   /** Guard value used for atomic first-user binding and retirement. */
   bindingVersion: number;
   /** Current credential lifecycle state. */
@@ -182,6 +200,17 @@ export interface DeviceAttestationOptions {
       /** Must be true; protected OAuth authorizations require `dpop_jkt`. */
       requireDpopJkt: true;
     };
+    /** Optional host credential-issuance assertion and grant policy. */
+    credentialIssuance?: {
+      /** Host-defined namespaces allowed to request issuance grants. */
+      allowedNamespaces: string[];
+      /** Assertion challenge lifetime in seconds. Defaults to 120. */
+      challengeTtlSeconds?: number;
+      /** One-time attestation grant lifetime in seconds. Defaults to 300. */
+      grantTtlSeconds?: number;
+      /** Must be true; issued credentials require a DPoP key binding. */
+      requireDpopJkt: true;
+    };
   };
   /** Optional safe server-side rejection reporting. */
   diagnostics?: {
@@ -206,6 +235,16 @@ export interface VerifiedAttestationGrant {
   userId: string;
 }
 
+/** Result of consuming a host credential-issuance attestation grant. */
+export interface VerifiedCredentialIssuanceGrant {
+  /** Plugin credential ID that authorized the issuance. */
+  credentialId: string;
+  /** Provider that verified the evidence. */
+  provider: string;
+  /** Verified application identity. */
+  applicationId: string;
+}
+
 /** Server plugin and OAuth Provider options composer returned by the factory. */
 export interface DeviceAttestationComposition {
   /** Install this plugin in exactly one `betterAuth()` instance. */
@@ -217,6 +256,23 @@ export interface DeviceAttestationComposition {
   protectOAuthProvider<T extends OAuthProviderCompositionOptions>(
     options: T,
   ): T;
+  /**
+   * Consume a one-time OAuth attestation grant and bind its credential to the
+   * authenticated Better Auth user.
+   */
+  consumeOAuthAuthorizationGrant(input: {
+    grantToken: string;
+    binding: OAuthAuthorizationBinding;
+    userId: string;
+  }): Promise<VerifiedAttestationGrant>;
+  /**
+   * Consume a one-time attestation grant for a host credential issuance and
+   * permanently mark the attestation credential as externally bound.
+   */
+  consumeCredentialIssuanceGrant(input: {
+    grantToken: string;
+    binding: CredentialIssuanceBinding;
+  }): Promise<VerifiedCredentialIssuanceGrant>;
 }
 
 /** OAuth Provider options accepted by `protectOAuthProvider`. */

@@ -293,6 +293,12 @@ const attestation = createDeviceAttestation({
       grantTtlSeconds: 300,
       requireDpopJkt: true,
     },
+    credentialIssuance: {
+      allowedNamespaces: ["example.device-pairing"],
+      challengeTtlSeconds: 120,
+      grantTtlSeconds: 300,
+      requireDpopJkt: true,
+    },
   },
   diagnostics: {
     report: reportAttestationEvent,
@@ -325,6 +331,15 @@ interface DeviceAttestationComposition {
   serverPlugin: BetterAuthPlugin;
 
   protectOAuthProvider<T extends OAuthProviderOptions>(options: T): T;
+  consumeOAuthAuthorizationGrant(input: {
+    grantToken: string;
+    binding: OAuthAuthorizationBinding;
+    userId: string;
+  }): Promise<VerifiedAttestationGrant>;
+  consumeCredentialIssuanceGrant(input: {
+    grantToken: string;
+    binding: CredentialIssuanceBinding;
+  }): Promise<VerifiedCredentialIssuanceGrant>;
 }
 ```
 
@@ -439,6 +454,27 @@ OAuth request:
   }
 }
 ```
+
+Host credential issuance uses a separate purpose and binding domain:
+
+```json
+{
+  "provider": "app-attest",
+  "applicationId": "TEAMID.com.example.mobile",
+  "operation": "assert",
+  "keyId": "base64-apple-key-identifier",
+  "purpose": "credential-issuance",
+  "binding": {
+    "namespace": "example.device-pairing",
+    "subject": "base64url-host-transaction-digest",
+    "dpopJkt": "base64url-jwk-thumbprint"
+  }
+}
+```
+
+The namespace must be configured by the host. The subject identifies the exact
+issuance ceremony without containing the raw credential or pairing secret.
+Credential-issuance and OAuth grants cannot be consumed across purposes.
 
 For assertion, the key must already identify an active credential. A client that
 has no registered credential completes registration first, then requests a
@@ -578,6 +614,7 @@ The plugin contributes one model through its schema:
 | `publicKey`          | string, optional | Base64 SPKI while usable; input/returned disabled in schema metadata.                                            |
 | `counter`            | number           | Unsigned 32-bit counter stored with Better Auth `bigint: true`; valid range `0..4294967295`.                     |
 | `userId`             | string, optional | Better Auth user reference using `onDelete: "set null"`; a deletion hook first creates a revoked tombstone.      |
+| `externallyBound`    | boolean          | Whether a host credential has been issued from this attested key.                                                |
 | `bindingVersion`     | number           | Starts at zero and supports atomic first-user claiming.                                                          |
 | `status`             | string           | `active`, `expired`, or `revoked`; no transition returns an expired or revoked row to active.                    |
 | `validationCategory` | number, optional | Last verified App Attest UInt32 category, stored with Better Auth `bigint: true`.                                |
@@ -586,7 +623,7 @@ The plugin contributes one model through its schema:
 | `createdAt`          | date             | Registration time.                                                                                               |
 | `updatedAt`          | date             | Better Auth on-update timestamp.                                                                                 |
 | `boundAt`            | date, optional   | First successful user binding time.                                                                              |
-| `unboundExpiresAt`   | date, optional   | Required while `userId` is null and active; cleared atomically on binding.                                       |
+| `unboundExpiresAt`   | date, optional   | Required until the first user or host-credential binding; cleared atomically on binding.                         |
 | `revokedAt`          | date, optional   | Permanent retirement time.                                                                                       |
 | `revocationReason`   | string, optional | Closed, non-sensitive reason enum; never a raw exception or user-supplied value.                                 |
 | `lastUsedAt`         | date, optional   | Last accepted assertion or grant redemption.                                                                     |
@@ -1293,10 +1330,10 @@ primitives pass the same contract suite.
 
 ## 27. Repository and release practices
 
-The package remains `private: true` until the first implementation passes the
-package and verifier acceptance criteria. Alpha development pins `better-auth`
-and `@better-auth/oauth-provider` to an exact 1.7 prerelease. Published peer
-ranges expand only after the compatibility matrix passes.
+Alpha releases publish only after the implementation passes the package and
+verifier acceptance criteria. Alpha development pins `better-auth` and
+`@better-auth/oauth-provider` to an exact 1.7 prerelease. Published peer ranges
+expand only after the compatibility matrix passes.
 
 Releases will use:
 
@@ -1373,7 +1410,7 @@ one matching, unexpired, one-time attestation grant bound to the same DPoP key.
   refresh, logout, recovery, and revocation.
 - Complete API review, documentation, package smoke tests, provenance,
   disclosure policy, and changelog.
-- Remove `private: true` only in the reviewed release change.
+- Publish only from a reviewed release change with a clean worktree.
 
 Acceptance: `0.1.0` installs from npm, generates its Better Auth schema, runs
 the example flow, and passes the supported version/adapter matrix. Every

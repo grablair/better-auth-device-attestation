@@ -1,7 +1,11 @@
 import { decodeBase64UrlStrict } from "./encoding/base64.js";
 import { DeviceAttestationError, rejection } from "./errors.js";
 import { grantStateSchema } from "./plugin-schemas.js";
-import { hashOAuthBinding, normalizeOAuthBinding } from "./protocol/binding.js";
+import {
+  hashCredentialIssuanceBinding,
+  hashOAuthBinding,
+  normalizeOAuthBinding,
+} from "./protocol/binding.js";
 import { equalBytes, hmacSha256 } from "./protocol/crypto.js";
 import {
   CREDENTIAL_MODEL,
@@ -9,10 +13,15 @@ import {
   type RuntimeContext,
 } from "./credential-store.js";
 import type {
+  CredentialIssuanceBinding,
   OAuthAuthorizationBinding,
   OAuthProviderTokenContext,
   StoredAttestationCredential,
+  VerifiedAttestationGrant,
+  VerifiedCredentialIssuanceGrant,
 } from "./types.js";
+
+type GrantPurpose = "credential-issuance" | "oauth-authorization";
 
 export async function consumeAndBindGrant(
   runtime: RuntimeContext,
@@ -29,6 +38,127 @@ export async function consumeAndBindGrant(
     });
   }
 
+  await consumeOAuthAuthorizationGrant(runtime, {
+    grantToken,
+    userId,
+    binding: oauthBindingFromQuery(query),
+  });
+}
+
+export async function consumeOAuthAuthorizationGrant(
+  runtime: RuntimeContext,
+  input: {
+    grantToken: string;
+    binding: OAuthAuthorizationBinding;
+    userId: string;
+  },
+): Promise<VerifiedAttestationGrant> {
+  if (!input.userId) {
+    throw rejection("grant-binding", "missing_user");
+  }
+  const { credential, exhaustedCredential, grant } = await consumeGrant(
+    runtime,
+    input.grantToken,
+    "oauth-authorization",
+    hashOAuthBinding(input.binding),
+  );
+
+  if (credential.userId === input.userId) {
+    return verifiedOAuthGrant(credential, input.userId);
+  }
+  if (credential.userId) {
+    throw rejection("credential-binding", "credential_user_mismatch");
+  }
+  if (
+    !credential.externallyBound &&
+    (!credential.unboundExpiresAt ||
+      credential.unboundExpiresAt.getTime() <= Date.now())
+  ) {
+    throw rejection("credential-binding", "unbound_credential_expired");
+  }
+
+  const bound = await runtime.adapter.incrementOne<StoredAttestationCredential>(
+    {
+      model: CREDENTIAL_MODEL,
+      where: [
+        { field: "id", value: credential.id },
+        {
+          field: "bindingVersion",
+          value: grant.credentialBindingVersion,
+        },
+        { field: "userId", value: null },
+        {
+          field: "status",
+          value: exhaustedCredential ? "revoked" : "active",
+        },
+      ],
+      increment: { bindingVersion: 1 },
+      set: {
+        userId: input.userId,
+        boundAt: new Date(),
+        unboundExpiresAt: null,
+      },
+    },
+  );
+  if (!bound) {
+    const raced = await findCredential(runtime, credential.id);
+    if (
+      raced?.userId !== input.userId ||
+      (!exhaustedCredential && raced.status !== "active")
+    ) {
+      throw rejection("credential-binding", "credential_binding_race");
+    }
+    return verifiedOAuthGrant(raced, input.userId);
+  }
+  return verifiedOAuthGrant(bound, input.userId);
+}
+
+export async function consumeCredentialIssuanceGrant(
+  runtime: RuntimeContext,
+  input: {
+    grantToken: string;
+    binding: CredentialIssuanceBinding;
+  },
+): Promise<VerifiedCredentialIssuanceGrant> {
+  const { credential, exhaustedCredential, grant } = await consumeGrant(
+    runtime,
+    input.grantToken,
+    "credential-issuance",
+    hashCredentialIssuanceBinding(input.binding),
+  );
+  const bound = await runtime.adapter.incrementOne<StoredAttestationCredential>(
+    {
+      model: CREDENTIAL_MODEL,
+      where: [
+        { field: "id", value: credential.id },
+        {
+          field: "bindingVersion",
+          value: grant.credentialBindingVersion,
+        },
+        {
+          field: "status",
+          value: exhaustedCredential ? "revoked" : "active",
+        },
+      ],
+      increment: { bindingVersion: 1 },
+      set: {
+        externallyBound: true,
+        unboundExpiresAt: null,
+      },
+    },
+  );
+  if (!bound) {
+    throw rejection("credential-binding", "credential_binding_race");
+  }
+  return verifiedCredentialIssuanceGrant(bound);
+}
+
+async function consumeGrant(
+  runtime: RuntimeContext,
+  grantToken: string,
+  purpose: GrantPurpose,
+  actualBindingHash: Uint8Array,
+) {
   decodeBase64UrlStrict(grantToken, {
     label: "grant_token",
     maxBytes: 32,
@@ -45,20 +175,21 @@ export async function consumeAndBindGrant(
     });
   }
   const grant = parseGrantState(verification.value);
-  const binding = oauthBindingFromQuery(query);
-  const actualBindingHash = hashOAuthBinding(binding);
+  if (grant.purpose !== purpose) {
+    throw rejection("grant-binding", "grant_purpose_mismatch");
+  }
   if (
     !equalBytes(actualBindingHash, Buffer.from(grant.bindingHash, "base64url"))
   ) {
-    throw rejection("grant-binding", "oauth_binding_mismatch");
+    throw rejection(
+      "grant-binding",
+      purpose === "oauth-authorization"
+        ? "oauth_binding_mismatch"
+        : "credential_issuance_binding_mismatch",
+    );
   }
 
-  const credential = await runtime.adapter.findOne<StoredAttestationCredential>(
-    {
-      model: CREDENTIAL_MODEL,
-      where: [{ field: "id", value: grant.credentialId }],
-    },
-  );
+  const credential = await findCredential(runtime, grant.credentialId);
   const exhaustedCredential =
     grant.counterExhausted &&
     credential?.status === "revoked" &&
@@ -71,52 +202,41 @@ export async function consumeAndBindGrant(
   }
   if (
     credential.provider !== grant.provider ||
-    credential.applicationId !== grant.applicationId
+    credential.applicationId !== grant.applicationId ||
+    credential.bindingVersion !== grant.credentialBindingVersion
   ) {
     throw rejection("grant-binding", "grant_credential_mismatch");
   }
-  if (credential.userId === userId) {
-    return;
-  }
-  if (credential.userId) {
-    throw rejection("credential-binding", "credential_user_mismatch");
-  }
-  if (
-    !credential.unboundExpiresAt ||
-    credential.unboundExpiresAt.getTime() <= Date.now()
-  ) {
-    throw rejection("credential-binding", "unbound_credential_expired");
-  }
+  return { credential, exhaustedCredential, grant };
+}
 
-  const bound = await runtime.adapter.incrementOne<StoredAttestationCredential>(
-    {
-      model: CREDENTIAL_MODEL,
-      where: [
-        { field: "id", value: credential.id },
-        { field: "bindingVersion", value: 0 },
-        { field: "userId", value: null },
-        {
-          field: "status",
-          value: exhaustedCredential ? "revoked" : "active",
-        },
-      ],
-      increment: { bindingVersion: 1 },
-      set: {
-        userId,
-        boundAt: new Date(),
-        unboundExpiresAt: null,
-      },
-    },
-  );
-  if (!bound) {
-    const raced = await runtime.adapter.findOne<StoredAttestationCredential>({
-      model: CREDENTIAL_MODEL,
-      where: [{ field: "id", value: credential.id }],
-    });
-    if (raced?.userId !== userId || raced.status !== "active") {
-      throw rejection("credential-binding", "credential_binding_race");
-    }
-  }
+function findCredential(runtime: RuntimeContext, credentialId: string) {
+  return runtime.adapter.findOne<StoredAttestationCredential>({
+    model: CREDENTIAL_MODEL,
+    where: [{ field: "id", value: credentialId }],
+  });
+}
+
+function verifiedOAuthGrant(
+  credential: StoredAttestationCredential,
+  userId: string,
+): VerifiedAttestationGrant {
+  return {
+    credentialId: credential.id,
+    provider: credential.provider,
+    applicationId: credential.applicationId,
+    userId,
+  };
+}
+
+function verifiedCredentialIssuanceGrant(
+  credential: StoredAttestationCredential,
+): VerifiedCredentialIssuanceGrant {
+  return {
+    credentialId: credential.id,
+    provider: credential.provider,
+    applicationId: credential.applicationId,
+  };
 }
 
 export function isProtectedClient(

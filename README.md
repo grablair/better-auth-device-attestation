@@ -6,9 +6,8 @@ implements Apple App Attest registration and assertion verification. Android
 Play Integrity is planned behind the provider boundary after the Apple flow is
 stable.
 
-> [!WARNING] This package is an unpublished alpha. Its API and database schema
-> may change, and `private: true` intentionally prevents accidental npm
-> publication.
+> [!WARNING] This package is an alpha. Its API and database schema may change
+> before the first stable release.
 
 ## What it provides
 
@@ -17,6 +16,7 @@ stable.
 - Apple-root-pinned App Attest certificate and assertion verification;
 - persistent credential keys, monotonic counters, user binding, and tombstones;
 - short-lived grants bound to OAuth, PKCE, resource, nonce, and DPoP inputs;
+- purpose-separated grants for attested, DPoP-bound host credential issuance;
 - optional Better Auth OAuth Provider enforcement;
 - explicit App Attest distribution-metadata policy;
 - safe structured diagnostics that exclude authentication material;
@@ -38,17 +38,17 @@ generation even when the deployed server runs Node.js 20.
 
 ## Installation
 
-The package is not published yet. Development from this repository uses:
+Install the current alpha with:
+
+```sh
+pnpm add @grablair/better-auth-device-attestation@alpha
+```
+
+Development from this repository uses:
 
 ```sh
 pnpm install
 pnpm check
-```
-
-After the first public release, installation will be:
-
-```sh
-pnpm add @grablair/better-auth-device-attestation
 ```
 
 ## Server configuration
@@ -102,6 +102,12 @@ const attestation = createDeviceAttestation({
       grantTtlSeconds: 300,
       requireDpopJkt: true,
     },
+    credentialIssuance: {
+      allowedNamespaces: ["example.device-pairing"],
+      challengeTtlSeconds: 120,
+      grantTtlSeconds: 300,
+      requireDpopJkt: true,
+    },
   },
   diagnostics: {
     report(event) {
@@ -144,11 +150,11 @@ npx auth@rc generate
 Review and apply the generated migration using the workflow for your adapter.
 The schema stores a hashed credential lookup key, SPKI public key while active,
 the full unsigned 32-bit assertion counter and validation category, user
-binding, lifecycle status, and the last accepted distribution metadata. Provider
-application identities are limited to 255 characters so indexed schema output
-remains portable across supported adapters. Raw App Attest evidence, receipts,
-challenges, key identifiers, DPoP proofs, and OAuth credentials are not stored
-in this model.
+binding, host-credential binding state, lifecycle status, and the last accepted
+distribution metadata. Provider application identities are limited to 255
+characters so indexed schema output remains portable across supported adapters.
+Raw App Attest evidence, receipts, challenges, key identifiers, DPoP proofs, and
+OAuth credentials are not stored in this model.
 
 Model and field-name overrides are not supported by the current alpha.
 
@@ -202,6 +208,28 @@ The application supplies the native App Attest bridge. Transport encodings are:
 5. Add the returned grant as `device_attestation` and the same DPoP thumbprint
    as `dpop_jkt` on the authorization request.
 6. Redeem the code with the matching PKCE verifier and DPoP private key.
+
+### Authorize host credential issuance
+
+Hosts can require the same assurance for a credential that is not an OAuth
+token, such as a paired-device credential:
+
+1. Configure a host-owned `credentialIssuance.allowedNamespaces` entry.
+2. Create a non-exportable DPoP key and a non-secret subject identifying the
+   exact issuance ceremony. Do not use the raw pairing code or credential.
+3. Request an assertion challenge with `purpose: "credential-issuance"` and a
+   binding containing the configured namespace, subject, and DPoP thumbprint.
+4. Verify the assertion through `/device-attestation/verify`.
+5. In the host issuance handler, call
+   `consumeCredentialIssuanceGrant({ grantToken, binding })` before creating the
+   credential, then persist the returned attestation credential ID and the same
+   DPoP thumbprint with the host credential.
+
+OAuth integrations that issue tokens outside the authorization-code callback can
+similarly call
+`consumeOAuthAuthorizationGrant({ grantToken, binding, userId })`. Both
+consumers atomically consume the grant and reject a grant made for the other
+purpose.
 
 Challenges and grants are short-lived and single-use. A failed or interrupted
 attempt obtains a new challenge; clients must never retry the same evidence with

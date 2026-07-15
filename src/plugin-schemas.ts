@@ -13,7 +13,13 @@ export const oauthBindingSchema = z.object({
   nonce: z.string().max(512).optional(),
 });
 
-export const challengeBodySchema = z.discriminatedUnion("operation", [
+export const credentialIssuanceBindingSchema = z.object({
+  namespace: z.string().min(1).max(256),
+  subject: z.string().min(1).max(512),
+  dpopJkt: z.string().min(1).max(256),
+});
+
+export const challengeBodySchema = z.discriminatedUnion("purpose", [
   z.object({
     provider: z.string().min(1).max(64),
     applicationId: z.string().min(1).max(MAX_APPLICATION_ID_LENGTH),
@@ -28,6 +34,14 @@ export const challengeBodySchema = z.discriminatedUnion("operation", [
     keyId: z.string().min(1).max(1024),
     purpose: z.literal("oauth-authorization"),
     binding: oauthBindingSchema,
+  }),
+  z.object({
+    provider: z.string().min(1).max(64),
+    applicationId: z.string().min(1).max(MAX_APPLICATION_ID_LENGTH),
+    operation: z.literal("assert"),
+    keyId: z.string().min(1).max(1024),
+    purpose: z.literal("credential-issuance"),
+    binding: credentialIssuanceBindingSchema,
   }),
 ]);
 
@@ -48,7 +62,11 @@ export const challengeStateSchema = z.object({
   provider: z.string(),
   applicationId: z.string().min(1).max(MAX_APPLICATION_ID_LENGTH),
   operation: z.enum(["register", "assert"]),
-  purpose: z.enum(["credential-registration", "oauth-authorization"]),
+  purpose: z.enum([
+    "credential-registration",
+    "credential-issuance",
+    "oauth-authorization",
+  ]),
   credentialLookupKey: z.string(),
   clientDataHash: z.string(),
   bindingHash: z.string().optional(),
@@ -59,6 +77,8 @@ export const grantStateSchema = z.object({
   provider: z.string(),
   applicationId: z.string().min(1).max(MAX_APPLICATION_ID_LENGTH),
   credentialId: z.string(),
+  credentialBindingVersion: z.number().int().nonnegative(),
+  purpose: z.enum(["credential-issuance", "oauth-authorization"]),
   bindingHash: z.string(),
   counterExhausted: z.boolean(),
 });
