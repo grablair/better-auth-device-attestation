@@ -1,0 +1,77 @@
+{
+  "name": "@grablair/better-auth-device-attestation",
+  "version": "0.1.0-alpha.0",
+  "description": "Device attestation for Better Auth, starting with Apple App Attest.",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "license": "MIT",
+  "author": "Graham Arthur Blair",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grablair/better-auth-device-attestation.git"
+  },
+  "bugs": {
+    "url": "https://github.com/grablair/better-auth-device-attestation/issues"
+  },
+  "homepage": "https://github.com/grablair/better-auth-device-attestation#readme",
+  "keywords": [
+    "app-attest",
+    "attestation",
+    "better-auth",
+    "device-integrity",
+    "ios",
+    "oauth",
+    "security"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.7.0",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "@better-auth/oauth-provider": ">=1.7.0-rc.1 <1.8.0",
+    "better-auth": ">=1.7.0-rc.1 <1.8.0"
+  },
+  "peerDependenciesMeta": {
+    "@better-auth/oauth-provider": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@better-auth/oauth-provider": "1.7.0-rc.1",
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^24.10.1",
+    "better-auth": "1.7.0-rc.1",
+    "eslint": "^9.39.2",
+    "prettier": "^3.8.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.56.1",
+    "vitest": "^4.1.4"
+  }
+}
